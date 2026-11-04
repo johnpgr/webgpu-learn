@@ -1,0 +1,16 @@
+--target=wasm32
+-std=c++20
+-nostdlib
+-ffreestanding
+-Wall
+-Wextra
+-Wno-c99-designator
+-Wno-unknown-attributes
+-O2
+-g
+-fno-exceptions
+-fno-rtti
+-mbulk-memory
+-Wl,--no-entry
+src/main.cpp
+-o build/game.wasm
