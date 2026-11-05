@@ -6,11 +6,13 @@
 -Wextra
 -Wno-c99-designator
 -Wno-unknown-attributes
--O2
+-O0
 -g
+-DDEBUG
 -fno-exceptions
 -fno-rtti
+-funsigned-char
 -mbulk-memory
 -Wl,--no-entry
-src/main.cpp
+src/main/native/main.cpp
 -o build/game.wasm

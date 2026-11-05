@@ -1,4 +1,7 @@
-// Thin JS host: owns the WebGPU objects, wasm only ever sees u32 handles.
+// Browser host: acquires the WebGPU adapter/device, manages canvas sizing,
+// wires the standard `webgpu.h` Wasm binding layer, and drives the animation loop.
+
+import { createWebGPUBindings } from "./webgpu.js";
 
 const status = (msg) => {
     document.getElementById("status").textContent = msg;
@@ -11,6 +14,10 @@ async function main() {
     if (!adapter) throw new Error("No GPU adapter found");
     const device = await adapter.requestDevice();
     device.lost.then((info) => status(`Device lost: ${info.message}`));
+    device.addEventListener("uncapturederror", (event) => {
+        console.error("WebGPU uncaptured error:", event.error);
+        status(`GPU Error: ${event.error.message}`);
+    });
 
     const canvas = document.getElementById("canvas");
     const context = canvas.getContext("webgpu");
@@ -30,36 +37,25 @@ async function main() {
     const mem = () => inst.exports.memory.buffer;
     const decoder = new TextDecoder();
 
-    // handle table: index 0 is reserved as the "null" handle
-    const objs = [null];
+    const wgpu = createWebGPUBindings({
+        adapter,
+        device,
+        context,
+        format,
+        memory: () => inst.exports.memory,
+    });
 
     const imports = {
         env: {
             print: (ptr, len) => console.log(decoder.decode(new Uint8Array(mem(), ptr, len))),
         },
-        gpu: {
-            create_buffer: (size, usage) => objs.push(device.createBuffer({ size, usage })) - 1,
-            write_buffer: (h, off, ptr, len) => device.queue.writeBuffer(objs[h], off, mem(), ptr, len),
-            clear: (r, g, b, a) => {
-                const encoder = device.createCommandEncoder();
-                const pass = encoder.beginRenderPass({
-                    colorAttachments: [{
-                        view: context.getCurrentTexture().createView(),
-                        clearValue: { r, g, b, a },
-                        loadOp: "clear",
-                        storeOp: "store",
-                    }],
-                });
-                pass.end();
-                device.queue.submit([encoder.finish()]);
-            },
-        },
+        gpu: wgpu.imports,
     };
 
     // Always load the latest build while developing.
     const result = await WebAssembly.instantiateStreaming(fetch("game.wasm", { cache: "no-store" }), imports);
     inst = result.instance;
-    inst.exports.init();
+    inst.exports.init(wgpu.handles.device, wgpu.handles.surface);
     status(`WebGPU ok (${format})`);
 
     let last = performance.now();

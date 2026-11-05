@@ -1,23 +1,31 @@
 #pragma once
 
-typedef __UINT8_TYPE__ u8;
-typedef __UINT16_TYPE__ u16;
-typedef __UINT32_TYPE__ u32;
-typedef __SIZE_TYPE__ usize;
+typedef signed char ichar;
+typedef unsigned short ushort;
+typedef unsigned int uint;
+typedef unsigned long long ulong;
+typedef int iptr;
+typedef unsigned int uptr;
+typedef long sz;
+typedef unsigned long usz;
 
-typedef __INT8_TYPE__ i8;
-typedef __INT16_TYPE__ i16;
-typedef __INT32_TYPE__ i32;
+#ifdef __SIZEOF_INT128__
+typedef __int128 int128;
+typedef unsigned __int128 uint128;
+#endif
 
-typedef float f32;
-typedef double f64;
+static_assert(sizeof(char) == 1 && char(-1) > 0);
+static_assert(sizeof(short) == 2);
+static_assert(sizeof(int) == 4);
+static_assert(sizeof(long long) == 8);
+static_assert(sizeof(void*) == 4, "These aliases target wasm32");
 
 #define GPU(n) __attribute__((import_module("gpu"), import_name(#n)))
 #define ENV(n) __attribute__((import_module("env"), import_name(#n)))
 #define EXPORT(n) __attribute__((export_name(#n)))
 
-#define KB(n) ((usize)(n) << 10)
-#define MB(n) ((usize)(n) << 20)
+#define KB(n) ((usz)(n) << 10)
+#define MB(n) ((usz)(n) << 20)
 #define WASM_PAGE_SIZE 65536u
 
 #ifdef DEBUG
@@ -26,42 +34,42 @@ typedef double f64;
     #define ASSERT(c) ((void)0)
 #endif /* ifdef DEBUG */
 
-extern "C" u8 __heap_base;
+extern "C" char __heap_base;
 
-inline void* operator new(usize, void* p) noexcept { return p; }
+inline void* operator new(usz, void* p) noexcept { return p; }
 
-inline u8* os_reserve(usize size) {
-    static usize brk = 0;
-    if (brk == 0) brk = (usize)&__heap_base;
+inline char* os_reserve(usz size) {
+    static usz brk = 0;
+    if (brk == 0) brk = (usz)&__heap_base;
 
-    usize start = (brk + 15) & ~(usize)15; //align to 16-byte on every block
-    usize end = start + size;
+    usz start = (brk + 15) & ~(usz)15; //align to 16-byte on every block
+    usz end = start + size;
     if (end < start) {
         ASSERT(!"Arena allocation fail: overflow");
         return nullptr;
     }
 
-    usize have = __builtin_wasm_memory_size(0) * WASM_PAGE_SIZE;
+    usz have = __builtin_wasm_memory_size(0) * WASM_PAGE_SIZE;
     if (end > have) {
-        usize pages = (end - have + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
-        if (__builtin_wasm_memory_grow(0, pages) == (usize)-1) {
+        usz pages = (end - have + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
+        if (__builtin_wasm_memory_grow(0, pages) == (usz)-1) {
             ASSERT(!"Arena allocation fail: can't grow the arena");
             return nullptr;
         }
     }
     brk = end;
 
-    return (u8*)start;
+    return (char*)start;
 }
 
 struct Arena {
-    u8* base;
-    usize cap;
-    usize pos;
-    usize peak;
+    char* base;
+    usz cap;
+    usz pos;
+    usz peak;
 };
 
-inline Arena make_arena(usize cap) {
+inline Arena make_arena(usz cap) {
     Arena a = {};
 
     a.base = os_reserve(cap);
@@ -70,11 +78,11 @@ inline Arena make_arena(usize cap) {
     return a;
 }
 
-inline Arena arena_sub(Arena* parent, usize cap);
+inline Arena arena_sub(Arena* parent, usz cap);
 
-inline void* arena_push_nz(Arena* a, usize size, usize align = 16) {
+inline void* arena_push_nz(Arena* a, usz size, usz align = 16) {
     ASSERT(align && (align & (align - 1)) == 0); // power of two
-    usize p = (a->pos + (align - 1)) & ~(align - 1);
+    usz p = (a->pos + (align - 1)) & ~(align - 1);
     if (p + size > a->cap || p + size < p) {
         __builtin_trap(); // out of budget
     }
@@ -85,17 +93,17 @@ inline void* arena_push_nz(Arena* a, usize size, usize align = 16) {
     return a->base + p;
 }
 
-inline void* arena_push_zero(Arena* a, usize size, usize align = 16) {
+inline void* arena_push_zero(Arena* a, usz size, usz align = 16) {
     void* p = arena_push_nz(a, size, align);
     __builtin_memset(p, 0, size);
 
     return p;
 }
 
-inline Arena arena_sub(Arena* parent, usize cap) {
+inline Arena arena_sub(Arena* parent, usz cap) {
     Arena a = {};
 
-    a.base = (u8*)arena_push_nz(parent, cap, 16);
+    a.base = (char*)arena_push_nz(parent, cap, 16);
     a.cap = cap;
 
     return a;
@@ -114,12 +122,12 @@ inline T* push_struct(Arena* a) {
 }
 
 template <typename T>
-inline T* push_array(Arena* a, usize n) {
+inline T* push_array(Arena* a, usz n) {
     return (T*)arena_push_zero(a, sizeof(T) * n, alignof(T));
 }
 
 template <typename T>
-inline T* push_array_nz(Arena* a, usize n) {
+inline T* push_array_nz(Arena* a, usz n) {
     return (T*)arena_push_nz(a, sizeof(T) * n, alignof(T));
 }
 
@@ -130,7 +138,7 @@ template <typename T> inline T* push_new(Arena* a) {
 
 struct Arena_Mark {
     Arena* arena;
-    usize pos;
+    usz pos;
 };
 
 inline Arena_Mark arena_mark(Arena* a) {
