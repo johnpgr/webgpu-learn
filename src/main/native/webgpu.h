@@ -17,19 +17,42 @@
 // - Every object type has wgpu<Object>AddRef and wgpu<Object>Release.
 // - Handles are 32-bit ids into a table in the JS host, not pointers.
 //
+// Startup follows the standard flow: wgpuCreateInstance -> wgpuInstanceCreateSurface
+// (with a chained WGPUEmscriptenSurfaceSourceCanvasHTMLSelector, as in Dawn's
+// emdawnwebgpu) -> wgpuInstanceRequestAdapter -> wgpuAdapterRequestDevice, waiting on
+// the returned futures with wgpuInstanceWaitAny.
+//
+// Async model (JSPI, https://github.com/WebAssembly/js-promise-integration):
+// - wgpuInstanceWaitAny with a timeout > 0 suspends the whole wasm stack until a
+//   future completes, then returns as a normal blocking call. This needs
+//   WGPUInstanceFeatureName::TimedWaitAny in WGPUInstanceDescriptor, as in the
+//   official API. It only works when wasm was entered through a
+//   WebAssembly.promising export, which the host does for init only. Anywhere
+//   else (frame, or inside a webgpu callback) any call to it, even with timeout 0,
+//   throws SuspendError and traps: never block in the frame loop.
+// - wgpuInstanceProcessEvents never blocks: it fires callbacks of completed
+//   futures registered with CallbackMode::AllowProcessEvents. Call it from frame
+//   to receive async results there. A busy loop on it never sees progress in a
+//   browser; in init, use wgpuInstanceWaitAny.
+// - AllowSpontaneous callbacks and uncaptured-error callbacks fire from the
+//   browser event loop, possibly while wasm is suspended in wgpuInstanceWaitAny.
+// - Message strings passed to callbacks are valid only during the callback.
+//
 // Differences from the official header:
-// - Only the functions and descriptors declared here exist. Instance, async
-//   requests, error scopes, query sets, render bundles and buffer mapping are
-//   not implemented.
+// - Only the functions and descriptors declared here exist. Error scopes, query
+//   sets, render bundles, buffer mapping, adapter info and feature enumeration
+//   are not implemented.
 // - Not implemented, and rejected at runtime instead of being ignored (the JS
 //   host throws, which traps wasm): WGPUBufferDescriptor::mappedAtCreation,
 //   WGPUBindGroupLayoutEntry::bindingArraySize, WGPUPipelineLayoutDescriptor::
 //   immediateSize, and the occlusionQuerySet / timestampWrites pass fields.
-// - Surface: wgpuSurfaceGetPreferredFormat is an extension (official code uses
-//   wgpuSurfaceGetCapabilities, which needs a wasm-side allocator). Unpremultiplied
-//   and Inherit alpha modes are rejected (browser canvases cannot do them).
-//   width, height and presentMode in WGPUSurfaceConfiguration are ignored: the
-//   host page owns the canvas size.
+// - Instance: only the TimedWaitAny feature is supported (wgpuCreateInstance
+//   returns null when another is required). Multiple instances share the browser's
+//   navigator.gpu.
+// - Surface: Unpremultiplied and Inherit alpha modes are rejected (browser canvases
+//   cannot do them). width, height and presentMode in WGPUSurfaceConfiguration are
+//   ignored: the host page owns the canvas size. wgpuSurfacePresent does nothing:
+//   the browser presents when the animation frame ends.
 // - WGPUShaderModuleDescriptor takes WGSL only, via a chained WGPUShaderSourceWGSL.
 // - Default member initializers (e.g. mipLevelCount = 1, depthClearValue = NaN)
 //   match WebGPU's defaults. Some use the concrete default where the official
@@ -38,8 +61,9 @@
 //   WebGPU validation report mistakes; it invents no defaults.
 //
 // Ownership: AddRef/Release are reference counted by the host. Reaching zero only
-// drops the handle; the browser object (and any GPU memory) is freed when JS
-// garbage collection gets to it. Call wgpuBufferDestroy / wgpuTextureDestroy to
+// drops the handle (except for devices, which are destroyed, as in the official
+// API); the browser object (and any GPU memory) is freed when JS garbage
+// collection gets to it. Call wgpuBufferDestroy / wgpuTextureDestroy to
 // free big resources eagerly. wgpuSurfaceGetCurrentTexture returns a NEW texture
 // handle on every call; you must wgpuTextureRelease it (and any view made from
 // it) each frame.
@@ -58,9 +82,11 @@ constexpr uint WGPU_DEPTH_SLICE_UNDEFINED = ~0u;
 constexpr uint WGPU_QUERY_SET_INDEX_UNDEFINED = ~0u;
 constexpr uint WGPU_COPY_STRIDE_UNDEFINED = ~0u;
 constexpr usz WGPU_STRLEN = ~(usz)0;
+constexpr uint WGPU_LIMIT_U32_UNDEFINED = ~0u;
+constexpr ulong WGPU_LIMIT_U64_UNDEFINED = ~(ulong)0;
 // Float NaN: "no depth clear value given". Forwarded as unset, so WebGPU rejects
 // depthLoadOp = Clear unless you set depthClearValue explicitly.
-constexpr float WGPU_DEPTH_CLEAR_VALUE_UNDEFINED = __builtin_nanf("");
+constexpr float WGPU_DEPTH_CLEAR_VALUE_UNDEFINED = NAN_F32;
 
 struct WGPUStringView {
     const char* data;
@@ -86,12 +112,12 @@ private:
 };
 
 static_assert(sizeof(WGPUStringView) == 8);
-static_assert(__builtin_offsetof(WGPUStringView, data) == 0);
-static_assert(__builtin_offsetof(WGPUStringView, length) == 4);
+static_assert(OFFSET_OF(WGPUStringView, data) == 0);
+static_assert(OFFSET_OF(WGPUStringView, length) == 4);
 
 inline WGPUStringView wgpu_str(const char* cstr) {
     if (!cstr) return {};
-    return { cstr, __builtin_strlen(cstr) };
+    return { cstr, STRLEN(cstr) };
 }
 
 // ----------------------------------------------------------------------------
@@ -144,6 +170,109 @@ enum class WGPUSurfaceGetCurrentTextureStatus : uint {
     Error = 6,
 };
 
+enum class WGPUStatus : uint {
+    Success = 1,
+    Error = 2,
+};
+
+enum class WGPUCallbackMode : uint {
+    WaitAnyOnly = 1,
+    AllowProcessEvents = 2,
+    AllowSpontaneous = 3,
+};
+
+enum class WGPUWaitStatus : uint {
+    Success = 1,
+    TimedOut = 2,
+    Error = 3,
+};
+
+enum class WGPURequestAdapterStatus : uint {
+    Success = 1,
+    CallbackCancelled = 2,
+    Unavailable = 3,
+    Error = 4,
+};
+
+enum class WGPURequestDeviceStatus : uint {
+    Success = 1,
+    CallbackCancelled = 2,
+    Error = 3,
+};
+
+enum class WGPUFeatureLevel : uint {
+    Undefined = 0,
+    Compatibility = 1,
+    Core = 2,
+};
+
+enum class WGPUPowerPreference : uint {
+    Undefined = 0,
+    LowPower = 1,
+    HighPerformance = 2,
+};
+
+enum class WGPUBackendType : uint {
+    Undefined = 0,
+    Null = 1,
+    WebGPU = 2,
+    D3D11 = 3,
+    D3D12 = 4,
+    Metal = 5,
+    Vulkan = 6,
+    OpenGL = 7,
+    OpenGLES = 8,
+};
+
+enum class WGPUInstanceFeatureName : uint {
+    TimedWaitAny = 1,
+    ShaderSourceSPIRV = 2,
+    MultipleDevicesPerAdapter = 3,
+};
+
+enum class WGPUFeatureName : uint {
+    CoreFeaturesAndLimits = 0x01,
+    DepthClipControl = 0x02,
+    Depth32FloatStencil8 = 0x03,
+    TextureCompressionBC = 0x04,
+    TextureCompressionBCSliced3D = 0x05,
+    TextureCompressionETC2 = 0x06,
+    TextureCompressionASTC = 0x07,
+    TextureCompressionASTCSliced3D = 0x08,
+    TimestampQuery = 0x09,
+    IndirectFirstInstance = 0x0A,
+    ShaderF16 = 0x0B,
+    RG11B10UfloatRenderable = 0x0C,
+    BGRA8UnormStorage = 0x0D,
+    Float32Filterable = 0x0E,
+    Float32Blendable = 0x0F,
+    ClipDistances = 0x10,
+    DualSourceBlending = 0x11,
+    Subgroups = 0x12,
+    TextureFormatsTier1 = 0x13,
+    TextureFormatsTier2 = 0x14,
+    PrimitiveIndex = 0x15,
+    TextureComponentSwizzle = 0x16,
+    SubgroupSizeControl = 0x17,
+    TextureCompressionUnaligned = 0x18,
+    AtomicVec2uMinMax = 0x19,
+};
+
+enum class WGPUErrorType : uint {
+    NoError = 1,
+    Validation = 2,
+    OutOfMemory = 3,
+    Internal = 4,
+    Unknown = 5,
+};
+
+enum class WGPUDeviceLostReason : uint {
+    Unknown = 1,
+    Destroyed = 2,
+    CallbackCancelled = 3,
+    FailedCreation = 4,
+};
+
 enum class WGPUCompositeAlphaMode : uint {
     Auto = 0,
     Opaque = 1,
@@ -183,6 +312,9 @@ enum class WGPUSType : uint {
     ExternalTextureBindingEntry = 14,
     CompatibilityModeLimits = 15,
     TextureBindingViewDimension = 16,
+    // Not in the official header: Dawn's emdawnwebgpu extension (Emscripten enums
+    // start at 0x0004_0000), used to create a surface from an HTML canvas.
+    EmscriptenSurfaceSourceCanvasHTMLSelector = 0x00040000,
 };
 
 enum class WGPUTextureFormat : uint {
@@ -522,8 +654,8 @@ struct WGPUChainedStruct {
 };
 
 static_assert(sizeof(WGPUChainedStruct) == 8);
-static_assert(__builtin_offsetof(WGPUChainedStruct, next) == 0);
-static_assert(__builtin_offsetof(WGPUChainedStruct, sType) == 4);
+static_assert(OFFSET_OF(WGPUChainedStruct, next) == 0);
+static_assert(OFFSET_OF(WGPUChainedStruct, sType) == 4);
 
 struct WGPUShaderSourceWGSL {
     WGPUChainedStruct chain = { nullptr, WGPUSType::ShaderSourceWGSL };
@@ -531,8 +663,8 @@ struct WGPUShaderSourceWGSL {
 };
 
 static_assert(sizeof(WGPUShaderSourceWGSL) == 16);
-static_assert(__builtin_offsetof(WGPUShaderSourceWGSL, chain) == 0);
-static_assert(__builtin_offsetof(WGPUShaderSourceWGSL, code) == 8);
+static_assert(OFFSET_OF(WGPUShaderSourceWGSL, chain) == 0);
+static_assert(OFFSET_OF(WGPUShaderSourceWGSL, code) == 8);
 
 // ----------------------------------------------------------------------------
 // Usage Bitflags (values match webgpu.h; WGPUFlags is 64-bit)
@@ -606,10 +738,10 @@ struct WGPUColor {
 };
 
 static_assert(sizeof(WGPUColor) == 32);
-static_assert(__builtin_offsetof(WGPUColor, r) == 0);
-static_assert(__builtin_offsetof(WGPUColor, g) == 8);
-static_assert(__builtin_offsetof(WGPUColor, b) == 16);
-static_assert(__builtin_offsetof(WGPUColor, a) == 24);
+static_assert(OFFSET_OF(WGPUColor, r) == 0);
+static_assert(OFFSET_OF(WGPUColor, g) == 8);
+static_assert(OFFSET_OF(WGPUColor, b) == 16);
+static_assert(OFFSET_OF(WGPUColor, a) == 24);
 
 struct WGPUOrigin3D {
     uint x;
@@ -618,9 +750,9 @@ struct WGPUOrigin3D {
 };
 
 static_assert(sizeof(WGPUOrigin3D) == 12);
-static_assert(__builtin_offsetof(WGPUOrigin3D, x) == 0);
-static_assert(__builtin_offsetof(WGPUOrigin3D, y) == 4);
-static_assert(__builtin_offsetof(WGPUOrigin3D, z) == 8);
+static_assert(OFFSET_OF(WGPUOrigin3D, x) == 0);
+static_assert(OFFSET_OF(WGPUOrigin3D, y) == 4);
+static_assert(OFFSET_OF(WGPUOrigin3D, z) == 8);
 
 struct WGPUExtent3D {
     uint width;
@@ -629,9 +761,9 @@ struct WGPUExtent3D {
 };
 
 static_assert(sizeof(WGPUExtent3D) == 12);
-static_assert(__builtin_offsetof(WGPUExtent3D, width) == 0);
-static_assert(__builtin_offsetof(WGPUExtent3D, height) == 4);
-static_assert(__builtin_offsetof(WGPUExtent3D, depthOrArrayLayers) == 8);
+static_assert(OFFSET_OF(WGPUExtent3D, width) == 0);
+static_assert(OFFSET_OF(WGPUExtent3D, height) == 4);
+static_assert(OFFSET_OF(WGPUExtent3D, depthOrArrayLayers) == 8);
 
 // width/height/presentMode are accepted for layout compatibility but ignored: the
 // host page owns the canvas size and the browser always presents with vsync.
@@ -649,16 +781,16 @@ struct WGPUSurfaceConfiguration {
 };
 
 static_assert(sizeof(WGPUSurfaceConfiguration) == 48);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, device) == 4);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, format) == 8);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, usage) == 16);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, width) == 24);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, height) == 28);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, viewFormatCount) == 32);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, viewFormats) == 36);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, alphaMode) == 40);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, presentMode) == 44);
+static_assert(OFFSET_OF(WGPUSurfaceConfiguration, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUSurfaceConfiguration, device) == 4);
+static_assert(OFFSET_OF(WGPUSurfaceConfiguration, format) == 8);
+static_assert(OFFSET_OF(WGPUSurfaceConfiguration, usage) == 16);
+static_assert(OFFSET_OF(WGPUSurfaceConfiguration, width) == 24);
+static_assert(OFFSET_OF(WGPUSurfaceConfiguration, height) == 28);
+static_assert(OFFSET_OF(WGPUSurfaceConfiguration, viewFormatCount) == 32);
+static_assert(OFFSET_OF(WGPUSurfaceConfiguration, viewFormats) == 36);
+static_assert(OFFSET_OF(WGPUSurfaceConfiguration, alphaMode) == 40);
+static_assert(OFFSET_OF(WGPUSurfaceConfiguration, presentMode) == 44);
 
 struct WGPUSurfaceTexture {
     const WGPUChainedStruct* nextInChain;
@@ -667,9 +799,9 @@ struct WGPUSurfaceTexture {
 };
 
 static_assert(sizeof(WGPUSurfaceTexture) == 12);
-static_assert(__builtin_offsetof(WGPUSurfaceTexture, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUSurfaceTexture, texture) == 4);
-static_assert(__builtin_offsetof(WGPUSurfaceTexture, status) == 8);
+static_assert(OFFSET_OF(WGPUSurfaceTexture, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUSurfaceTexture, texture) == 4);
+static_assert(OFFSET_OF(WGPUSurfaceTexture, status) == 8);
 
 struct WGPUBufferDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -680,11 +812,11 @@ struct WGPUBufferDescriptor {
 };
 
 static_assert(sizeof(WGPUBufferDescriptor) == 40);
-static_assert(__builtin_offsetof(WGPUBufferDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUBufferDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUBufferDescriptor, usage) == 16);
-static_assert(__builtin_offsetof(WGPUBufferDescriptor, size) == 24);
-static_assert(__builtin_offsetof(WGPUBufferDescriptor, mappedAtCreation) == 32);
+static_assert(OFFSET_OF(WGPUBufferDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUBufferDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUBufferDescriptor, usage) == 16);
+static_assert(OFFSET_OF(WGPUBufferDescriptor, size) == 24);
+static_assert(OFFSET_OF(WGPUBufferDescriptor, mappedAtCreation) == 32);
 
 struct WGPUTextureDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -700,16 +832,16 @@ struct WGPUTextureDescriptor {
 };
 
 static_assert(sizeof(WGPUTextureDescriptor) == 64);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, usage) == 16);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, dimension) == 24);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, size) == 28);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, format) == 40);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, mipLevelCount) == 44);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, sampleCount) == 48);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, viewFormatCount) == 52);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, viewFormats) == 56);
+static_assert(OFFSET_OF(WGPUTextureDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUTextureDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUTextureDescriptor, usage) == 16);
+static_assert(OFFSET_OF(WGPUTextureDescriptor, dimension) == 24);
+static_assert(OFFSET_OF(WGPUTextureDescriptor, size) == 28);
+static_assert(OFFSET_OF(WGPUTextureDescriptor, format) == 40);
+static_assert(OFFSET_OF(WGPUTextureDescriptor, mipLevelCount) == 44);
+static_assert(OFFSET_OF(WGPUTextureDescriptor, sampleCount) == 48);
+static_assert(OFFSET_OF(WGPUTextureDescriptor, viewFormatCount) == 52);
+static_assert(OFFSET_OF(WGPUTextureDescriptor, viewFormats) == 56);
 
 struct WGPUTextureViewDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -725,16 +857,16 @@ struct WGPUTextureViewDescriptor {
 };
 
 static_assert(sizeof(WGPUTextureViewDescriptor) == 48);
-static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, format) == 12);
-static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, dimension) == 16);
-static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, baseMipLevel) == 20);
-static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, mipLevelCount) == 24);
-static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, baseArrayLayer) == 28);
-static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, arrayLayerCount) == 32);
-static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, aspect) == 36);
-static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, usage) == 40);
+static_assert(OFFSET_OF(WGPUTextureViewDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUTextureViewDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUTextureViewDescriptor, format) == 12);
+static_assert(OFFSET_OF(WGPUTextureViewDescriptor, dimension) == 16);
+static_assert(OFFSET_OF(WGPUTextureViewDescriptor, baseMipLevel) == 20);
+static_assert(OFFSET_OF(WGPUTextureViewDescriptor, mipLevelCount) == 24);
+static_assert(OFFSET_OF(WGPUTextureViewDescriptor, baseArrayLayer) == 28);
+static_assert(OFFSET_OF(WGPUTextureViewDescriptor, arrayLayerCount) == 32);
+static_assert(OFFSET_OF(WGPUTextureViewDescriptor, aspect) == 36);
+static_assert(OFFSET_OF(WGPUTextureViewDescriptor, usage) == 40);
 
 struct WGPUSamplerDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -752,18 +884,18 @@ struct WGPUSamplerDescriptor {
 };
 
 static_assert(sizeof(WGPUSamplerDescriptor) == 52);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, addressModeU) == 12);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, addressModeV) == 16);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, addressModeW) == 20);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, magFilter) == 24);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, minFilter) == 28);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, mipmapFilter) == 32);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, lodMinClamp) == 36);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, lodMaxClamp) == 40);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, compare) == 44);
-static_assert(__builtin_offsetof(WGPUSamplerDescriptor, maxAnisotropy) == 48);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, addressModeU) == 12);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, addressModeV) == 16);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, addressModeW) == 20);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, magFilter) == 24);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, minFilter) == 28);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, mipmapFilter) == 32);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, lodMinClamp) == 36);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, lodMaxClamp) == 40);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, compare) == 44);
+static_assert(OFFSET_OF(WGPUSamplerDescriptor, maxAnisotropy) == 48);
 
 // Source is supplied by chaining a WGPUShaderSourceWGSL through nextInChain.
 struct WGPUShaderModuleDescriptor {
@@ -772,8 +904,8 @@ struct WGPUShaderModuleDescriptor {
 };
 
 static_assert(sizeof(WGPUShaderModuleDescriptor) == 12);
-static_assert(__builtin_offsetof(WGPUShaderModuleDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUShaderModuleDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUShaderModuleDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUShaderModuleDescriptor, label) == 4);
 
 struct WGPUBufferBindingLayout {
     const WGPUChainedStruct* nextInChain;
@@ -783,10 +915,10 @@ struct WGPUBufferBindingLayout {
 };
 
 static_assert(sizeof(WGPUBufferBindingLayout) == 24);
-static_assert(__builtin_offsetof(WGPUBufferBindingLayout, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUBufferBindingLayout, type) == 4);
-static_assert(__builtin_offsetof(WGPUBufferBindingLayout, hasDynamicOffset) == 8);
-static_assert(__builtin_offsetof(WGPUBufferBindingLayout, minBindingSize) == 16);
+static_assert(OFFSET_OF(WGPUBufferBindingLayout, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUBufferBindingLayout, type) == 4);
+static_assert(OFFSET_OF(WGPUBufferBindingLayout, hasDynamicOffset) == 8);
+static_assert(OFFSET_OF(WGPUBufferBindingLayout, minBindingSize) == 16);
 
 struct WGPUSamplerBindingLayout {
     const WGPUChainedStruct* nextInChain;
@@ -794,8 +926,8 @@ struct WGPUSamplerBindingLayout {
 };
 
 static_assert(sizeof(WGPUSamplerBindingLayout) == 8);
-static_assert(__builtin_offsetof(WGPUSamplerBindingLayout, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUSamplerBindingLayout, type) == 4);
+static_assert(OFFSET_OF(WGPUSamplerBindingLayout, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUSamplerBindingLayout, type) == 4);
 
 struct WGPUTextureBindingLayout {
     const WGPUChainedStruct* nextInChain;
@@ -805,10 +937,10 @@ struct WGPUTextureBindingLayout {
 };
 
 static_assert(sizeof(WGPUTextureBindingLayout) == 16);
-static_assert(__builtin_offsetof(WGPUTextureBindingLayout, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUTextureBindingLayout, sampleType) == 4);
-static_assert(__builtin_offsetof(WGPUTextureBindingLayout, viewDimension) == 8);
-static_assert(__builtin_offsetof(WGPUTextureBindingLayout, multisampled) == 12);
+static_assert(OFFSET_OF(WGPUTextureBindingLayout, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUTextureBindingLayout, sampleType) == 4);
+static_assert(OFFSET_OF(WGPUTextureBindingLayout, viewDimension) == 8);
+static_assert(OFFSET_OF(WGPUTextureBindingLayout, multisampled) == 12);
 
 struct WGPUStorageTextureBindingLayout {
     const WGPUChainedStruct* nextInChain;
@@ -818,10 +950,10 @@ struct WGPUStorageTextureBindingLayout {
 };
 
 static_assert(sizeof(WGPUStorageTextureBindingLayout) == 16);
-static_assert(__builtin_offsetof(WGPUStorageTextureBindingLayout, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUStorageTextureBindingLayout, access) == 4);
-static_assert(__builtin_offsetof(WGPUStorageTextureBindingLayout, format) == 8);
-static_assert(__builtin_offsetof(WGPUStorageTextureBindingLayout, viewDimension) == 12);
+static_assert(OFFSET_OF(WGPUStorageTextureBindingLayout, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUStorageTextureBindingLayout, access) == 4);
+static_assert(OFFSET_OF(WGPUStorageTextureBindingLayout, format) == 8);
+static_assert(OFFSET_OF(WGPUStorageTextureBindingLayout, viewDimension) == 12);
 
 struct WGPUBindGroupLayoutEntry {
     const WGPUChainedStruct* nextInChain;
@@ -835,14 +967,14 @@ struct WGPUBindGroupLayoutEntry {
 };
 
 static_assert(sizeof(WGPUBindGroupLayoutEntry) == 88);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, binding) == 4);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, visibility) == 8);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, bindingArraySize) == 16);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, buffer) == 24);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, sampler) == 48);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, texture) == 56);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, storageTexture) == 72);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutEntry, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutEntry, binding) == 4);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutEntry, visibility) == 8);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutEntry, bindingArraySize) == 16);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutEntry, buffer) == 24);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutEntry, sampler) == 48);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutEntry, texture) == 56);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutEntry, storageTexture) == 72);
 
 struct WGPUBindGroupLayoutDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -852,10 +984,10 @@ struct WGPUBindGroupLayoutDescriptor {
 };
 
 static_assert(sizeof(WGPUBindGroupLayoutDescriptor) == 20);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutDescriptor, entryCount) == 12);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutDescriptor, entries) == 16);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutDescriptor, entryCount) == 12);
+static_assert(OFFSET_OF(WGPUBindGroupLayoutDescriptor, entries) == 16);
 
 struct WGPUBindGroupEntry {
     const WGPUChainedStruct* nextInChain;
@@ -868,13 +1000,13 @@ struct WGPUBindGroupEntry {
 };
 
 static_assert(sizeof(WGPUBindGroupEntry) == 40);
-static_assert(__builtin_offsetof(WGPUBindGroupEntry, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUBindGroupEntry, binding) == 4);
-static_assert(__builtin_offsetof(WGPUBindGroupEntry, buffer) == 8);
-static_assert(__builtin_offsetof(WGPUBindGroupEntry, offset) == 16);
-static_assert(__builtin_offsetof(WGPUBindGroupEntry, size) == 24);
-static_assert(__builtin_offsetof(WGPUBindGroupEntry, sampler) == 32);
-static_assert(__builtin_offsetof(WGPUBindGroupEntry, textureView) == 36);
+static_assert(OFFSET_OF(WGPUBindGroupEntry, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUBindGroupEntry, binding) == 4);
+static_assert(OFFSET_OF(WGPUBindGroupEntry, buffer) == 8);
+static_assert(OFFSET_OF(WGPUBindGroupEntry, offset) == 16);
+static_assert(OFFSET_OF(WGPUBindGroupEntry, size) == 24);
+static_assert(OFFSET_OF(WGPUBindGroupEntry, sampler) == 32);
+static_assert(OFFSET_OF(WGPUBindGroupEntry, textureView) == 36);
 
 struct WGPUBindGroupDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -885,11 +1017,11 @@ struct WGPUBindGroupDescriptor {
 };
 
 static_assert(sizeof(WGPUBindGroupDescriptor) == 24);
-static_assert(__builtin_offsetof(WGPUBindGroupDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUBindGroupDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUBindGroupDescriptor, layout) == 12);
-static_assert(__builtin_offsetof(WGPUBindGroupDescriptor, entryCount) == 16);
-static_assert(__builtin_offsetof(WGPUBindGroupDescriptor, entries) == 20);
+static_assert(OFFSET_OF(WGPUBindGroupDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUBindGroupDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUBindGroupDescriptor, layout) == 12);
+static_assert(OFFSET_OF(WGPUBindGroupDescriptor, entryCount) == 16);
+static_assert(OFFSET_OF(WGPUBindGroupDescriptor, entries) == 20);
 
 struct WGPUPipelineLayoutDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -900,11 +1032,11 @@ struct WGPUPipelineLayoutDescriptor {
 };
 
 static_assert(sizeof(WGPUPipelineLayoutDescriptor) == 24);
-static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, bindGroupLayoutCount) == 12);
-static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, bindGroupLayouts) == 16);
-static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, immediateSize) == 20);
+static_assert(OFFSET_OF(WGPUPipelineLayoutDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUPipelineLayoutDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUPipelineLayoutDescriptor, bindGroupLayoutCount) == 12);
+static_assert(OFFSET_OF(WGPUPipelineLayoutDescriptor, bindGroupLayouts) == 16);
+static_assert(OFFSET_OF(WGPUPipelineLayoutDescriptor, immediateSize) == 20);
 
 struct WGPUVertexAttribute {
     const WGPUChainedStruct* nextInChain;
@@ -914,10 +1046,10 @@ struct WGPUVertexAttribute {
 };
 
 static_assert(sizeof(WGPUVertexAttribute) == 24);
-static_assert(__builtin_offsetof(WGPUVertexAttribute, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUVertexAttribute, format) == 4);
-static_assert(__builtin_offsetof(WGPUVertexAttribute, offset) == 8);
-static_assert(__builtin_offsetof(WGPUVertexAttribute, shaderLocation) == 16);
+static_assert(OFFSET_OF(WGPUVertexAttribute, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUVertexAttribute, format) == 4);
+static_assert(OFFSET_OF(WGPUVertexAttribute, offset) == 8);
+static_assert(OFFSET_OF(WGPUVertexAttribute, shaderLocation) == 16);
 
 struct WGPUVertexBufferLayout {
     const WGPUChainedStruct* nextInChain;
@@ -928,11 +1060,11 @@ struct WGPUVertexBufferLayout {
 };
 
 static_assert(sizeof(WGPUVertexBufferLayout) == 24);
-static_assert(__builtin_offsetof(WGPUVertexBufferLayout, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUVertexBufferLayout, stepMode) == 4);
-static_assert(__builtin_offsetof(WGPUVertexBufferLayout, arrayStride) == 8);
-static_assert(__builtin_offsetof(WGPUVertexBufferLayout, attributeCount) == 16);
-static_assert(__builtin_offsetof(WGPUVertexBufferLayout, attributes) == 20);
+static_assert(OFFSET_OF(WGPUVertexBufferLayout, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUVertexBufferLayout, stepMode) == 4);
+static_assert(OFFSET_OF(WGPUVertexBufferLayout, arrayStride) == 8);
+static_assert(OFFSET_OF(WGPUVertexBufferLayout, attributeCount) == 16);
+static_assert(OFFSET_OF(WGPUVertexBufferLayout, attributes) == 20);
 
 struct WGPUConstantEntry {
     const WGPUChainedStruct* nextInChain;
@@ -941,9 +1073,9 @@ struct WGPUConstantEntry {
 };
 
 static_assert(sizeof(WGPUConstantEntry) == 24);
-static_assert(__builtin_offsetof(WGPUConstantEntry, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUConstantEntry, key) == 4);
-static_assert(__builtin_offsetof(WGPUConstantEntry, value) == 16);
+static_assert(OFFSET_OF(WGPUConstantEntry, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUConstantEntry, key) == 4);
+static_assert(OFFSET_OF(WGPUConstantEntry, value) == 16);
 
 struct WGPUVertexState {
     const WGPUChainedStruct* nextInChain;
@@ -956,13 +1088,13 @@ struct WGPUVertexState {
 };
 
 static_assert(sizeof(WGPUVertexState) == 32);
-static_assert(__builtin_offsetof(WGPUVertexState, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUVertexState, module) == 4);
-static_assert(__builtin_offsetof(WGPUVertexState, entryPoint) == 8);
-static_assert(__builtin_offsetof(WGPUVertexState, constantCount) == 16);
-static_assert(__builtin_offsetof(WGPUVertexState, constants) == 20);
-static_assert(__builtin_offsetof(WGPUVertexState, bufferCount) == 24);
-static_assert(__builtin_offsetof(WGPUVertexState, buffers) == 28);
+static_assert(OFFSET_OF(WGPUVertexState, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUVertexState, module) == 4);
+static_assert(OFFSET_OF(WGPUVertexState, entryPoint) == 8);
+static_assert(OFFSET_OF(WGPUVertexState, constantCount) == 16);
+static_assert(OFFSET_OF(WGPUVertexState, constants) == 20);
+static_assert(OFFSET_OF(WGPUVertexState, bufferCount) == 24);
+static_assert(OFFSET_OF(WGPUVertexState, buffers) == 28);
 
 struct WGPUPrimitiveState {
     const WGPUChainedStruct* nextInChain;
@@ -974,12 +1106,12 @@ struct WGPUPrimitiveState {
 };
 
 static_assert(sizeof(WGPUPrimitiveState) == 24);
-static_assert(__builtin_offsetof(WGPUPrimitiveState, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUPrimitiveState, topology) == 4);
-static_assert(__builtin_offsetof(WGPUPrimitiveState, stripIndexFormat) == 8);
-static_assert(__builtin_offsetof(WGPUPrimitiveState, frontFace) == 12);
-static_assert(__builtin_offsetof(WGPUPrimitiveState, cullMode) == 16);
-static_assert(__builtin_offsetof(WGPUPrimitiveState, unclippedDepth) == 20);
+static_assert(OFFSET_OF(WGPUPrimitiveState, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUPrimitiveState, topology) == 4);
+static_assert(OFFSET_OF(WGPUPrimitiveState, stripIndexFormat) == 8);
+static_assert(OFFSET_OF(WGPUPrimitiveState, frontFace) == 12);
+static_assert(OFFSET_OF(WGPUPrimitiveState, cullMode) == 16);
+static_assert(OFFSET_OF(WGPUPrimitiveState, unclippedDepth) == 20);
 
 struct WGPUStencilFaceState {
     WGPUCompareFunction compare = WGPUCompareFunction::Always;
@@ -989,10 +1121,10 @@ struct WGPUStencilFaceState {
 };
 
 static_assert(sizeof(WGPUStencilFaceState) == 16);
-static_assert(__builtin_offsetof(WGPUStencilFaceState, compare) == 0);
-static_assert(__builtin_offsetof(WGPUStencilFaceState, failOp) == 4);
-static_assert(__builtin_offsetof(WGPUStencilFaceState, depthFailOp) == 8);
-static_assert(__builtin_offsetof(WGPUStencilFaceState, passOp) == 12);
+static_assert(OFFSET_OF(WGPUStencilFaceState, compare) == 0);
+static_assert(OFFSET_OF(WGPUStencilFaceState, failOp) == 4);
+static_assert(OFFSET_OF(WGPUStencilFaceState, depthFailOp) == 8);
+static_assert(OFFSET_OF(WGPUStencilFaceState, passOp) == 12);
 
 struct WGPUDepthStencilState {
     const WGPUChainedStruct* nextInChain;
@@ -1009,17 +1141,17 @@ struct WGPUDepthStencilState {
 };
 
 static_assert(sizeof(WGPUDepthStencilState) == 68);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, format) == 4);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, depthWriteEnabled) == 8);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, depthCompare) == 12);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, stencilFront) == 16);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, stencilBack) == 32);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, stencilReadMask) == 48);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, stencilWriteMask) == 52);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, depthBias) == 56);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, depthBiasSlopeScale) == 60);
-static_assert(__builtin_offsetof(WGPUDepthStencilState, depthBiasClamp) == 64);
+static_assert(OFFSET_OF(WGPUDepthStencilState, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUDepthStencilState, format) == 4);
+static_assert(OFFSET_OF(WGPUDepthStencilState, depthWriteEnabled) == 8);
+static_assert(OFFSET_OF(WGPUDepthStencilState, depthCompare) == 12);
+static_assert(OFFSET_OF(WGPUDepthStencilState, stencilFront) == 16);
+static_assert(OFFSET_OF(WGPUDepthStencilState, stencilBack) == 32);
+static_assert(OFFSET_OF(WGPUDepthStencilState, stencilReadMask) == 48);
+static_assert(OFFSET_OF(WGPUDepthStencilState, stencilWriteMask) == 52);
+static_assert(OFFSET_OF(WGPUDepthStencilState, depthBias) == 56);
+static_assert(OFFSET_OF(WGPUDepthStencilState, depthBiasSlopeScale) == 60);
+static_assert(OFFSET_OF(WGPUDepthStencilState, depthBiasClamp) == 64);
 
 struct WGPUMultisampleState {
     const WGPUChainedStruct* nextInChain;
@@ -1029,10 +1161,10 @@ struct WGPUMultisampleState {
 };
 
 static_assert(sizeof(WGPUMultisampleState) == 16);
-static_assert(__builtin_offsetof(WGPUMultisampleState, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUMultisampleState, count) == 4);
-static_assert(__builtin_offsetof(WGPUMultisampleState, mask) == 8);
-static_assert(__builtin_offsetof(WGPUMultisampleState, alphaToCoverageEnabled) == 12);
+static_assert(OFFSET_OF(WGPUMultisampleState, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUMultisampleState, count) == 4);
+static_assert(OFFSET_OF(WGPUMultisampleState, mask) == 8);
+static_assert(OFFSET_OF(WGPUMultisampleState, alphaToCoverageEnabled) == 12);
 
 struct WGPUBlendComponent {
     WGPUBlendOperation operation = WGPUBlendOperation::Add;
@@ -1041,9 +1173,9 @@ struct WGPUBlendComponent {
 };
 
 static_assert(sizeof(WGPUBlendComponent) == 12);
-static_assert(__builtin_offsetof(WGPUBlendComponent, operation) == 0);
-static_assert(__builtin_offsetof(WGPUBlendComponent, srcFactor) == 4);
-static_assert(__builtin_offsetof(WGPUBlendComponent, dstFactor) == 8);
+static_assert(OFFSET_OF(WGPUBlendComponent, operation) == 0);
+static_assert(OFFSET_OF(WGPUBlendComponent, srcFactor) == 4);
+static_assert(OFFSET_OF(WGPUBlendComponent, dstFactor) == 8);
 
 struct WGPUBlendState {
     WGPUBlendComponent color;
@@ -1051,8 +1183,8 @@ struct WGPUBlendState {
 };
 
 static_assert(sizeof(WGPUBlendState) == 24);
-static_assert(__builtin_offsetof(WGPUBlendState, color) == 0);
-static_assert(__builtin_offsetof(WGPUBlendState, alpha) == 12);
+static_assert(OFFSET_OF(WGPUBlendState, color) == 0);
+static_assert(OFFSET_OF(WGPUBlendState, alpha) == 12);
 
 struct WGPUColorTargetState {
     const WGPUChainedStruct* nextInChain;
@@ -1062,10 +1194,10 @@ struct WGPUColorTargetState {
 };
 
 static_assert(sizeof(WGPUColorTargetState) == 24);
-static_assert(__builtin_offsetof(WGPUColorTargetState, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUColorTargetState, format) == 4);
-static_assert(__builtin_offsetof(WGPUColorTargetState, blend) == 8);
-static_assert(__builtin_offsetof(WGPUColorTargetState, writeMask) == 16);
+static_assert(OFFSET_OF(WGPUColorTargetState, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUColorTargetState, format) == 4);
+static_assert(OFFSET_OF(WGPUColorTargetState, blend) == 8);
+static_assert(OFFSET_OF(WGPUColorTargetState, writeMask) == 16);
 
 struct WGPUFragmentState {
     const WGPUChainedStruct* nextInChain;
@@ -1078,13 +1210,13 @@ struct WGPUFragmentState {
 };
 
 static_assert(sizeof(WGPUFragmentState) == 32);
-static_assert(__builtin_offsetof(WGPUFragmentState, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUFragmentState, module) == 4);
-static_assert(__builtin_offsetof(WGPUFragmentState, entryPoint) == 8);
-static_assert(__builtin_offsetof(WGPUFragmentState, constantCount) == 16);
-static_assert(__builtin_offsetof(WGPUFragmentState, constants) == 20);
-static_assert(__builtin_offsetof(WGPUFragmentState, targetCount) == 24);
-static_assert(__builtin_offsetof(WGPUFragmentState, targets) == 28);
+static_assert(OFFSET_OF(WGPUFragmentState, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUFragmentState, module) == 4);
+static_assert(OFFSET_OF(WGPUFragmentState, entryPoint) == 8);
+static_assert(OFFSET_OF(WGPUFragmentState, constantCount) == 16);
+static_assert(OFFSET_OF(WGPUFragmentState, constants) == 20);
+static_assert(OFFSET_OF(WGPUFragmentState, targetCount) == 24);
+static_assert(OFFSET_OF(WGPUFragmentState, targets) == 28);
 
 struct WGPURenderPipelineDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -1098,14 +1230,14 @@ struct WGPURenderPipelineDescriptor {
 };
 
 static_assert(sizeof(WGPURenderPipelineDescriptor) == 96);
-static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, layout) == 12);
-static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, vertex) == 16);
-static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, primitive) == 48);
-static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, depthStencil) == 72);
-static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, multisample) == 76);
-static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, fragment) == 92);
+static_assert(OFFSET_OF(WGPURenderPipelineDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPURenderPipelineDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPURenderPipelineDescriptor, layout) == 12);
+static_assert(OFFSET_OF(WGPURenderPipelineDescriptor, vertex) == 16);
+static_assert(OFFSET_OF(WGPURenderPipelineDescriptor, primitive) == 48);
+static_assert(OFFSET_OF(WGPURenderPipelineDescriptor, depthStencil) == 72);
+static_assert(OFFSET_OF(WGPURenderPipelineDescriptor, multisample) == 76);
+static_assert(OFFSET_OF(WGPURenderPipelineDescriptor, fragment) == 92);
 
 struct WGPUComputeState {
     const WGPUChainedStruct* nextInChain;
@@ -1116,11 +1248,11 @@ struct WGPUComputeState {
 };
 
 static_assert(sizeof(WGPUComputeState) == 24);
-static_assert(__builtin_offsetof(WGPUComputeState, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUComputeState, module) == 4);
-static_assert(__builtin_offsetof(WGPUComputeState, entryPoint) == 8);
-static_assert(__builtin_offsetof(WGPUComputeState, constantCount) == 16);
-static_assert(__builtin_offsetof(WGPUComputeState, constants) == 20);
+static_assert(OFFSET_OF(WGPUComputeState, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUComputeState, module) == 4);
+static_assert(OFFSET_OF(WGPUComputeState, entryPoint) == 8);
+static_assert(OFFSET_OF(WGPUComputeState, constantCount) == 16);
+static_assert(OFFSET_OF(WGPUComputeState, constants) == 20);
 
 struct WGPUComputePipelineDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -1130,10 +1262,10 @@ struct WGPUComputePipelineDescriptor {
 };
 
 static_assert(sizeof(WGPUComputePipelineDescriptor) == 40);
-static_assert(__builtin_offsetof(WGPUComputePipelineDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUComputePipelineDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUComputePipelineDescriptor, layout) == 12);
-static_assert(__builtin_offsetof(WGPUComputePipelineDescriptor, compute) == 16);
+static_assert(OFFSET_OF(WGPUComputePipelineDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUComputePipelineDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUComputePipelineDescriptor, layout) == 12);
+static_assert(OFFSET_OF(WGPUComputePipelineDescriptor, compute) == 16);
 
 struct WGPUCommandEncoderDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -1141,8 +1273,8 @@ struct WGPUCommandEncoderDescriptor {
 };
 
 static_assert(sizeof(WGPUCommandEncoderDescriptor) == 12);
-static_assert(__builtin_offsetof(WGPUCommandEncoderDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUCommandEncoderDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUCommandEncoderDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUCommandEncoderDescriptor, label) == 4);
 
 struct WGPUCommandBufferDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -1150,8 +1282,8 @@ struct WGPUCommandBufferDescriptor {
 };
 
 static_assert(sizeof(WGPUCommandBufferDescriptor) == 12);
-static_assert(__builtin_offsetof(WGPUCommandBufferDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUCommandBufferDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUCommandBufferDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUCommandBufferDescriptor, label) == 4);
 
 struct WGPUPassTimestampWrites {
     const WGPUChainedStruct* nextInChain;
@@ -1161,10 +1293,10 @@ struct WGPUPassTimestampWrites {
 };
 
 static_assert(sizeof(WGPUPassTimestampWrites) == 16);
-static_assert(__builtin_offsetof(WGPUPassTimestampWrites, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUPassTimestampWrites, querySet) == 4);
-static_assert(__builtin_offsetof(WGPUPassTimestampWrites, beginningOfPassWriteIndex) == 8);
-static_assert(__builtin_offsetof(WGPUPassTimestampWrites, endOfPassWriteIndex) == 12);
+static_assert(OFFSET_OF(WGPUPassTimestampWrites, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUPassTimestampWrites, querySet) == 4);
+static_assert(OFFSET_OF(WGPUPassTimestampWrites, beginningOfPassWriteIndex) == 8);
+static_assert(OFFSET_OF(WGPUPassTimestampWrites, endOfPassWriteIndex) == 12);
 
 struct WGPURenderPassColorAttachment {
     const WGPUChainedStruct* nextInChain;
@@ -1177,13 +1309,13 @@ struct WGPURenderPassColorAttachment {
 };
 
 static_assert(sizeof(WGPURenderPassColorAttachment) == 56);
-static_assert(__builtin_offsetof(WGPURenderPassColorAttachment, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPURenderPassColorAttachment, view) == 4);
-static_assert(__builtin_offsetof(WGPURenderPassColorAttachment, depthSlice) == 8);
-static_assert(__builtin_offsetof(WGPURenderPassColorAttachment, resolveTarget) == 12);
-static_assert(__builtin_offsetof(WGPURenderPassColorAttachment, loadOp) == 16);
-static_assert(__builtin_offsetof(WGPURenderPassColorAttachment, storeOp) == 20);
-static_assert(__builtin_offsetof(WGPURenderPassColorAttachment, clearValue) == 24);
+static_assert(OFFSET_OF(WGPURenderPassColorAttachment, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPURenderPassColorAttachment, view) == 4);
+static_assert(OFFSET_OF(WGPURenderPassColorAttachment, depthSlice) == 8);
+static_assert(OFFSET_OF(WGPURenderPassColorAttachment, resolveTarget) == 12);
+static_assert(OFFSET_OF(WGPURenderPassColorAttachment, loadOp) == 16);
+static_assert(OFFSET_OF(WGPURenderPassColorAttachment, storeOp) == 20);
+static_assert(OFFSET_OF(WGPURenderPassColorAttachment, clearValue) == 24);
 
 struct WGPURenderPassDepthStencilAttachment {
     const WGPUChainedStruct* nextInChain;
@@ -1199,16 +1331,16 @@ struct WGPURenderPassDepthStencilAttachment {
 };
 
 static_assert(sizeof(WGPURenderPassDepthStencilAttachment) == 40);
-static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, view) == 4);
-static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, depthLoadOp) == 8);
-static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, depthStoreOp) == 12);
-static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, depthClearValue) == 16);
-static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, depthReadOnly) == 20);
-static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, stencilLoadOp) == 24);
-static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, stencilStoreOp) == 28);
-static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, stencilClearValue) == 32);
-static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, stencilReadOnly) == 36);
+static_assert(OFFSET_OF(WGPURenderPassDepthStencilAttachment, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPURenderPassDepthStencilAttachment, view) == 4);
+static_assert(OFFSET_OF(WGPURenderPassDepthStencilAttachment, depthLoadOp) == 8);
+static_assert(OFFSET_OF(WGPURenderPassDepthStencilAttachment, depthStoreOp) == 12);
+static_assert(OFFSET_OF(WGPURenderPassDepthStencilAttachment, depthClearValue) == 16);
+static_assert(OFFSET_OF(WGPURenderPassDepthStencilAttachment, depthReadOnly) == 20);
+static_assert(OFFSET_OF(WGPURenderPassDepthStencilAttachment, stencilLoadOp) == 24);
+static_assert(OFFSET_OF(WGPURenderPassDepthStencilAttachment, stencilStoreOp) == 28);
+static_assert(OFFSET_OF(WGPURenderPassDepthStencilAttachment, stencilClearValue) == 32);
+static_assert(OFFSET_OF(WGPURenderPassDepthStencilAttachment, stencilReadOnly) == 36);
 
 struct WGPURenderPassDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -1221,13 +1353,13 @@ struct WGPURenderPassDescriptor {
 };
 
 static_assert(sizeof(WGPURenderPassDescriptor) == 32);
-static_assert(__builtin_offsetof(WGPURenderPassDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPURenderPassDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPURenderPassDescriptor, colorAttachmentCount) == 12);
-static_assert(__builtin_offsetof(WGPURenderPassDescriptor, colorAttachments) == 16);
-static_assert(__builtin_offsetof(WGPURenderPassDescriptor, depthStencilAttachment) == 20);
-static_assert(__builtin_offsetof(WGPURenderPassDescriptor, occlusionQuerySet) == 24);
-static_assert(__builtin_offsetof(WGPURenderPassDescriptor, timestampWrites) == 28);
+static_assert(OFFSET_OF(WGPURenderPassDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPURenderPassDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPURenderPassDescriptor, colorAttachmentCount) == 12);
+static_assert(OFFSET_OF(WGPURenderPassDescriptor, colorAttachments) == 16);
+static_assert(OFFSET_OF(WGPURenderPassDescriptor, depthStencilAttachment) == 20);
+static_assert(OFFSET_OF(WGPURenderPassDescriptor, occlusionQuerySet) == 24);
+static_assert(OFFSET_OF(WGPURenderPassDescriptor, timestampWrites) == 28);
 
 struct WGPUComputePassDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -1236,9 +1368,9 @@ struct WGPUComputePassDescriptor {
 };
 
 static_assert(sizeof(WGPUComputePassDescriptor) == 16);
-static_assert(__builtin_offsetof(WGPUComputePassDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUComputePassDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUComputePassDescriptor, timestampWrites) == 12);
+static_assert(OFFSET_OF(WGPUComputePassDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUComputePassDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUComputePassDescriptor, timestampWrites) == 12);
 
 struct WGPUTexelCopyBufferLayout {
     ulong offset;
@@ -1247,9 +1379,9 @@ struct WGPUTexelCopyBufferLayout {
 };
 
 static_assert(sizeof(WGPUTexelCopyBufferLayout) == 16);
-static_assert(__builtin_offsetof(WGPUTexelCopyBufferLayout, offset) == 0);
-static_assert(__builtin_offsetof(WGPUTexelCopyBufferLayout, bytesPerRow) == 8);
-static_assert(__builtin_offsetof(WGPUTexelCopyBufferLayout, rowsPerImage) == 12);
+static_assert(OFFSET_OF(WGPUTexelCopyBufferLayout, offset) == 0);
+static_assert(OFFSET_OF(WGPUTexelCopyBufferLayout, bytesPerRow) == 8);
+static_assert(OFFSET_OF(WGPUTexelCopyBufferLayout, rowsPerImage) == 12);
 
 struct WGPUTexelCopyBufferInfo {
     WGPUTexelCopyBufferLayout layout;
@@ -1257,8 +1389,8 @@ struct WGPUTexelCopyBufferInfo {
 };
 
 static_assert(sizeof(WGPUTexelCopyBufferInfo) == 24);
-static_assert(__builtin_offsetof(WGPUTexelCopyBufferInfo, layout) == 0);
-static_assert(__builtin_offsetof(WGPUTexelCopyBufferInfo, buffer) == 16);
+static_assert(OFFSET_OF(WGPUTexelCopyBufferInfo, layout) == 0);
+static_assert(OFFSET_OF(WGPUTexelCopyBufferInfo, buffer) == 16);
 
 struct WGPUTexelCopyTextureInfo {
     WGPUTexture texture;
@@ -1268,14 +1400,321 @@ struct WGPUTexelCopyTextureInfo {
 };
 
 static_assert(sizeof(WGPUTexelCopyTextureInfo) == 24);
-static_assert(__builtin_offsetof(WGPUTexelCopyTextureInfo, texture) == 0);
-static_assert(__builtin_offsetof(WGPUTexelCopyTextureInfo, mipLevel) == 4);
-static_assert(__builtin_offsetof(WGPUTexelCopyTextureInfo, origin) == 8);
-static_assert(__builtin_offsetof(WGPUTexelCopyTextureInfo, aspect) == 20);
+static_assert(OFFSET_OF(WGPUTexelCopyTextureInfo, texture) == 0);
+static_assert(OFFSET_OF(WGPUTexelCopyTextureInfo, mipLevel) == 4);
+static_assert(OFFSET_OF(WGPUTexelCopyTextureInfo, origin) == 8);
+static_assert(OFFSET_OF(WGPUTexelCopyTextureInfo, aspect) == 20);
+
+// ----------------------------------------------------------------------------
+// Instance, Adapter, Device & Surface Creation (async, futures, callbacks)
+// ----------------------------------------------------------------------------
+
+struct WGPUFuture {
+    ulong id;
+};
+
+static_assert(sizeof(WGPUFuture) == 8);
+static_assert(OFFSET_OF(WGPUFuture, id) == 0);
+
+struct WGPUFutureWaitInfo {
+    WGPUFuture future;
+    WGPUBool completed = WGPU_FALSE;
+};
+
+static_assert(sizeof(WGPUFutureWaitInfo) == 16);
+static_assert(OFFSET_OF(WGPUFutureWaitInfo, future) == 0);
+static_assert(OFFSET_OF(WGPUFutureWaitInfo, completed) == 8);
+
+struct WGPUInstanceLimits {
+    const WGPUChainedStruct* nextInChain;
+    usz timedWaitAnyMaxCount;
+};
+
+static_assert(sizeof(WGPUInstanceLimits) == 8);
+static_assert(OFFSET_OF(WGPUInstanceLimits, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUInstanceLimits, timedWaitAnyMaxCount) == 4);
+
+struct WGPUInstanceDescriptor {
+    const WGPUChainedStruct* nextInChain;
+    usz requiredFeatureCount;
+    const WGPUInstanceFeatureName* requiredFeatures;
+    const WGPUInstanceLimits* requiredLimits;
+};
+
+static_assert(sizeof(WGPUInstanceDescriptor) == 16);
+static_assert(OFFSET_OF(WGPUInstanceDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUInstanceDescriptor, requiredFeatureCount) == 4);
+static_assert(OFFSET_OF(WGPUInstanceDescriptor, requiredFeatures) == 8);
+static_assert(OFFSET_OF(WGPUInstanceDescriptor, requiredLimits) == 12);
+
+struct WGPURequestAdapterOptions {
+    const WGPUChainedStruct* nextInChain;
+    WGPUFeatureLevel featureLevel;        // Undefined means Core
+    WGPUPowerPreference powerPreference;
+    WGPUBool forceFallbackAdapter;
+    WGPUBackendType backendType;          // ignored: the browser picks the backend
+    WGPUSurface compatibleSurface;        // ignored: every browser adapter can present
+};
+
+static_assert(sizeof(WGPURequestAdapterOptions) == 24);
+static_assert(OFFSET_OF(WGPURequestAdapterOptions, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPURequestAdapterOptions, featureLevel) == 4);
+static_assert(OFFSET_OF(WGPURequestAdapterOptions, powerPreference) == 8);
+static_assert(OFFSET_OF(WGPURequestAdapterOptions, forceFallbackAdapter) == 12);
+static_assert(OFFSET_OF(WGPURequestAdapterOptions, backendType) == 16);
+static_assert(OFFSET_OF(WGPURequestAdapterOptions, compatibleSurface) == 20);
+
+typedef void (*WGPURequestAdapterCallback)(
+    WGPURequestAdapterStatus status, WGPUAdapter adapter, WGPUStringView message,
+    void* userdata1, void* userdata2);
+typedef void (*WGPURequestDeviceCallback)(
+    WGPURequestDeviceStatus status, WGPUDevice device, WGPUStringView message,
+    void* userdata1, void* userdata2);
+// `device` points to null if the device's last reference was already released.
+typedef void (*WGPUDeviceLostCallback)(
+    const WGPUDevice* device, WGPUDeviceLostReason reason, WGPUStringView message,
+    void* userdata1, void* userdata2);
+typedef void (*WGPUUncapturedErrorCallback)(
+    const WGPUDevice* device, WGPUErrorType type, WGPUStringView message,
+    void* userdata1, void* userdata2);
+
+struct WGPURequestAdapterCallbackInfo {
+    const WGPUChainedStruct* nextInChain;
+    WGPUCallbackMode mode;
+    WGPURequestAdapterCallback callback;
+    void* userdata1;
+    void* userdata2;
+};
+
+static_assert(sizeof(WGPURequestAdapterCallbackInfo) == 20);
+static_assert(OFFSET_OF(WGPURequestAdapterCallbackInfo, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPURequestAdapterCallbackInfo, mode) == 4);
+static_assert(OFFSET_OF(WGPURequestAdapterCallbackInfo, callback) == 8);
+static_assert(OFFSET_OF(WGPURequestAdapterCallbackInfo, userdata1) == 12);
+static_assert(OFFSET_OF(WGPURequestAdapterCallbackInfo, userdata2) == 16);
+
+struct WGPURequestDeviceCallbackInfo {
+    const WGPUChainedStruct* nextInChain;
+    WGPUCallbackMode mode;
+    WGPURequestDeviceCallback callback;
+    void* userdata1;
+    void* userdata2;
+};
+
+static_assert(sizeof(WGPURequestDeviceCallbackInfo) == 20);
+static_assert(OFFSET_OF(WGPURequestDeviceCallbackInfo, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPURequestDeviceCallbackInfo, mode) == 4);
+static_assert(OFFSET_OF(WGPURequestDeviceCallbackInfo, callback) == 8);
+static_assert(OFFSET_OF(WGPURequestDeviceCallbackInfo, userdata1) == 12);
+static_assert(OFFSET_OF(WGPURequestDeviceCallbackInfo, userdata2) == 16);
+
+struct WGPUDeviceLostCallbackInfo {
+    const WGPUChainedStruct* nextInChain;
+    WGPUCallbackMode mode;
+    WGPUDeviceLostCallback callback;
+    void* userdata1;
+    void* userdata2;
+};
+
+static_assert(sizeof(WGPUDeviceLostCallbackInfo) == 20);
+static_assert(OFFSET_OF(WGPUDeviceLostCallbackInfo, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUDeviceLostCallbackInfo, mode) == 4);
+static_assert(OFFSET_OF(WGPUDeviceLostCallbackInfo, callback) == 8);
+static_assert(OFFSET_OF(WGPUDeviceLostCallbackInfo, userdata1) == 12);
+static_assert(OFFSET_OF(WGPUDeviceLostCallbackInfo, userdata2) == 16);
+
+struct WGPUUncapturedErrorCallbackInfo {
+    const WGPUChainedStruct* nextInChain;
+    WGPUUncapturedErrorCallback callback;
+    void* userdata1;
+    void* userdata2;
+};
+
+static_assert(sizeof(WGPUUncapturedErrorCallbackInfo) == 16);
+static_assert(OFFSET_OF(WGPUUncapturedErrorCallbackInfo, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUUncapturedErrorCallbackInfo, callback) == 4);
+static_assert(OFFSET_OF(WGPUUncapturedErrorCallbackInfo, userdata1) == 8);
+static_assert(OFFSET_OF(WGPUUncapturedErrorCallbackInfo, userdata2) == 12);
+
+// Every limit defaults to WGPU_LIMIT_*_UNDEFINED ("no requirement"), as in WGPU_LIMITS_INIT.
+struct WGPULimits {
+    const WGPUChainedStruct* nextInChain;
+    uint maxTextureDimension1D = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxTextureDimension2D = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxTextureDimension3D = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxTextureArrayLayers = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxBindGroups = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxBindGroupsPlusVertexBuffers = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxBindingsPerBindGroup = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxDynamicUniformBuffersPerPipelineLayout = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxDynamicStorageBuffersPerPipelineLayout = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxSampledTexturesPerShaderStage = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxSamplersPerShaderStage = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxStorageBuffersPerShaderStage = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxStorageTexturesPerShaderStage = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxUniformBuffersPerShaderStage = WGPU_LIMIT_U32_UNDEFINED;
+    ulong maxUniformBufferBindingSize = WGPU_LIMIT_U64_UNDEFINED;
+    ulong maxStorageBufferBindingSize = WGPU_LIMIT_U64_UNDEFINED;
+    uint minUniformBufferOffsetAlignment = WGPU_LIMIT_U32_UNDEFINED;
+    uint minStorageBufferOffsetAlignment = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxVertexBuffers = WGPU_LIMIT_U32_UNDEFINED;
+    ulong maxBufferSize = WGPU_LIMIT_U64_UNDEFINED;
+    uint maxVertexAttributes = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxVertexBufferArrayStride = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxInterStageShaderVariables = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxColorAttachments = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxColorAttachmentBytesPerSample = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxComputeWorkgroupStorageSize = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxComputeInvocationsPerWorkgroup = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxComputeWorkgroupSizeX = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxComputeWorkgroupSizeY = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxComputeWorkgroupSizeZ = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxComputeWorkgroupsPerDimension = WGPU_LIMIT_U32_UNDEFINED;
+    uint maxImmediateSize = WGPU_LIMIT_U32_UNDEFINED;
+};
+
+static_assert(sizeof(WGPULimits) == 152);
+static_assert(OFFSET_OF(WGPULimits, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPULimits, maxTextureDimension1D) == 4);
+static_assert(OFFSET_OF(WGPULimits, maxUniformBuffersPerShaderStage) == 56);
+static_assert(OFFSET_OF(WGPULimits, maxUniformBufferBindingSize) == 64);
+static_assert(OFFSET_OF(WGPULimits, maxStorageBufferBindingSize) == 72);
+static_assert(OFFSET_OF(WGPULimits, minUniformBufferOffsetAlignment) == 80);
+static_assert(OFFSET_OF(WGPULimits, maxVertexBuffers) == 88);
+static_assert(OFFSET_OF(WGPULimits, maxBufferSize) == 96);
+static_assert(OFFSET_OF(WGPULimits, maxVertexAttributes) == 104);
+static_assert(OFFSET_OF(WGPULimits, maxComputeWorkgroupsPerDimension) == 144);
+static_assert(OFFSET_OF(WGPULimits, maxImmediateSize) == 148);
+
+struct WGPUQueueDescriptor {
+    const WGPUChainedStruct* nextInChain;
+    WGPUStringView label;
+};
+
+static_assert(sizeof(WGPUQueueDescriptor) == 12);
+static_assert(OFFSET_OF(WGPUQueueDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUQueueDescriptor, label) == 4);
+
+struct WGPUDeviceDescriptor {
+    const WGPUChainedStruct* nextInChain;
+    WGPUStringView label;
+    usz requiredFeatureCount;
+    const WGPUFeatureName* requiredFeatures;
+    const WGPULimits* requiredLimits;
+    WGPUQueueDescriptor defaultQueue;
+    WGPUDeviceLostCallbackInfo deviceLostCallbackInfo;
+    WGPUUncapturedErrorCallbackInfo uncapturedErrorCallbackInfo;
+};
+
+static_assert(sizeof(WGPUDeviceDescriptor) == 72);
+static_assert(OFFSET_OF(WGPUDeviceDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUDeviceDescriptor, label) == 4);
+static_assert(OFFSET_OF(WGPUDeviceDescriptor, requiredFeatureCount) == 12);
+static_assert(OFFSET_OF(WGPUDeviceDescriptor, requiredFeatures) == 16);
+static_assert(OFFSET_OF(WGPUDeviceDescriptor, requiredLimits) == 20);
+static_assert(OFFSET_OF(WGPUDeviceDescriptor, defaultQueue) == 24);
+static_assert(OFFSET_OF(WGPUDeviceDescriptor, deviceLostCallbackInfo) == 36);
+static_assert(OFFSET_OF(WGPUDeviceDescriptor, uncapturedErrorCallbackInfo) == 56);
+
+struct WGPUSurfaceDescriptor {
+    const WGPUChainedStruct* nextInChain;
+    WGPUStringView label;
+};
+
+static_assert(sizeof(WGPUSurfaceDescriptor) == 12);
+static_assert(OFFSET_OF(WGPUSurfaceDescriptor, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUSurfaceDescriptor, label) == 4);
+
+// emdawnwebgpu extension: chain into WGPUSurfaceDescriptor to create a surface from
+// the canvas matching a CSS selector, e.g. "#canvas".
+struct WGPUEmscriptenSurfaceSourceCanvasHTMLSelector {
+    WGPUChainedStruct chain = { nullptr, WGPUSType::EmscriptenSurfaceSourceCanvasHTMLSelector };
+    WGPUStringView selector;
+};
+
+static_assert(sizeof(WGPUEmscriptenSurfaceSourceCanvasHTMLSelector) == 16);
+static_assert(OFFSET_OF(WGPUEmscriptenSurfaceSourceCanvasHTMLSelector, chain) == 0);
+static_assert(OFFSET_OF(WGPUEmscriptenSurfaceSourceCanvasHTMLSelector, selector) == 8);
+
+// Filled by wgpuSurfaceGetCapabilities. formats[0] is the browser's preferred canvas
+// format. The arrays are owned by the JS host and stay valid for the program's life;
+// still call wgpuSurfaceCapabilitiesFreeMembers, as portable code must.
+struct WGPUSurfaceCapabilities {
+    const WGPUChainedStruct* nextInChain;
+    WGPUTextureUsage usages;
+    usz formatCount;
+    const WGPUTextureFormat* formats;
+    usz presentModeCount;
+    const WGPUPresentMode* presentModes;
+    usz alphaModeCount;
+    const WGPUCompositeAlphaMode* alphaModes;
+};
+
+static_assert(sizeof(WGPUSurfaceCapabilities) == 40);
+static_assert(OFFSET_OF(WGPUSurfaceCapabilities, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUSurfaceCapabilities, usages) == 8);
+static_assert(OFFSET_OF(WGPUSurfaceCapabilities, formatCount) == 16);
+static_assert(OFFSET_OF(WGPUSurfaceCapabilities, formats) == 20);
+static_assert(OFFSET_OF(WGPUSurfaceCapabilities, presentModeCount) == 24);
+static_assert(OFFSET_OF(WGPUSurfaceCapabilities, presentModes) == 28);
+static_assert(OFFSET_OF(WGPUSurfaceCapabilities, alphaModeCount) == 32);
+static_assert(OFFSET_OF(WGPUSurfaceCapabilities, alphaModes) == 36);
+
+// Called by the JS host (not by your code) when it must place data in wasm memory:
+// strings passed to callbacks and the surface capability arrays. Bump-allocated
+// and never freed; the host allocates a fixed amount once and reuses it.
+EXPORT(wgpu_host_alloc) __attribute__((used)) inline void* wgpu_host_alloc(usz size) {
+    return os_reserve(size);
+}
 
 // ----------------------------------------------------------------------------
 // Standard webgpu.h Functions
 // ----------------------------------------------------------------------------
+
+// Instance
+GPU(wgpuCreateInstance) WGPUInstance wgpuCreateInstance(
+    const WGPUInstanceDescriptor* descriptor = nullptr
+);
+
+GPU(wgpuGetInstanceLimits) WGPUStatus wgpuGetInstanceLimits(
+    WGPUInstanceLimits* limits
+);
+
+GPU(wgpuHasInstanceFeature) WGPUBool wgpuHasInstanceFeature(
+    WGPUInstanceFeatureName feature
+);
+
+// WGPUInstance
+GPU(wgpuInstanceCreateSurface) WGPUSurface wgpuInstanceCreateSurface(
+    WGPUInstance instance,
+    const WGPUSurfaceDescriptor* descriptor
+);
+
+GPU(wgpuInstanceRequestAdapter) WGPUFuture wgpuInstanceRequestAdapter(
+    WGPUInstance instance,
+    const WGPURequestAdapterOptions* options,
+    WGPURequestAdapterCallbackInfo callbackInfo
+);
+
+// Suspends (JSPI) until a future completes or the timeout expires; see the top of this file.
+GPU(wgpuInstanceWaitAny) WGPUWaitStatus wgpuInstanceWaitAny(
+    WGPUInstance instance,
+    usz futureCount,
+    WGPUFutureWaitInfo* futures,
+    ulong timeoutNS
+);
+
+GPU(wgpuInstanceProcessEvents) void wgpuInstanceProcessEvents(
+    WGPUInstance instance
+);
+
+GPU(wgpuInstanceAddRef) void wgpuInstanceAddRef(
+    WGPUInstance instance
+);
+
+GPU(wgpuInstanceRelease) void wgpuInstanceRelease(
+    WGPUInstance instance
+);
 
 // WGPUSurface
 GPU(wgpuSurfaceConfigure) void wgpuSurfaceConfigure(
@@ -1292,12 +1731,18 @@ GPU(wgpuSurfaceGetCurrentTexture) void wgpuSurfaceGetCurrentTexture(
     WGPUSurfaceTexture* surfaceTexture
 );
 
-GPU(wgpuSurfaceGetPreferredFormat) WGPUTextureFormat wgpuSurfaceGetPreferredFormat(
+GPU(wgpuSurfaceGetCapabilities) WGPUStatus wgpuSurfaceGetCapabilities(
     WGPUSurface surface,
-    WGPUAdapter adapter = {}
+    WGPUAdapter adapter,
+    WGPUSurfaceCapabilities* capabilities
 );
 
-GPU(wgpuSurfacePresent) void wgpuSurfacePresent(
+GPU(wgpuSurfaceCapabilitiesFreeMembers) void wgpuSurfaceCapabilitiesFreeMembers(
+    WGPUSurfaceCapabilities surfaceCapabilities
+);
+
+// No-op that returns Success: the browser presents when the animation frame ends.
+GPU(wgpuSurfacePresent) WGPUStatus wgpuSurfacePresent(
     WGPUSurface surface
 );
 
@@ -1310,6 +1755,17 @@ GPU(wgpuSurfaceRelease) void wgpuSurfaceRelease(
 );
 
 // WGPUAdapter
+GPU(wgpuAdapterGetLimits) WGPUStatus wgpuAdapterGetLimits(
+    WGPUAdapter adapter,
+    WGPULimits* limits
+);
+
+GPU(wgpuAdapterRequestDevice) WGPUFuture wgpuAdapterRequestDevice(
+    WGPUAdapter adapter,
+    const WGPUDeviceDescriptor* descriptor,
+    WGPURequestDeviceCallbackInfo callbackInfo
+);
+
 GPU(wgpuAdapterAddRef) void wgpuAdapterAddRef(
     WGPUAdapter adapter
 );
@@ -1320,6 +1776,15 @@ GPU(wgpuAdapterRelease) void wgpuAdapterRelease(
 
 // WGPUDevice
 GPU(wgpuDeviceGetQueue) WGPUQueue wgpuDeviceGetQueue(
+    WGPUDevice device
+);
+
+GPU(wgpuDeviceGetLimits) WGPUStatus wgpuDeviceGetLimits(
+    WGPUDevice device,
+    WGPULimits* limits
+);
+
+GPU(wgpuDeviceGetLostFuture) WGPUFuture wgpuDeviceGetLostFuture(
     WGPUDevice device
 );
 

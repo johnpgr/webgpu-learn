@@ -14,5 +14,6 @@
 -funsigned-char
 -mbulk-memory
 -Wl,--no-entry
+-Wl,--export-table
 src/main/native/main.cpp
 -o build/game.wasm

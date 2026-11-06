@@ -2,6 +2,12 @@
 
 ## Run locally
 
+Needs a browser with WebGPU and WebAssembly JSPI (JavaScript Promise
+Integration): Chrome/Edge 137+ or Firefox 153+. The C++ code sets up WebGPU the
+standard `webgpu.h` way (instance, surface, adapter, device) and blocks on the
+async requests with `wgpuInstanceWaitAny`; JSPI suspends the wasm stack while it
+waits, so no Emscripten or Asyncify is needed.
+
 Rebuild after changing C++ or the JS/HTML host, then serve the repository root
 so the debugger can also load the C++ sources:
 
@@ -32,14 +38,14 @@ To try a breakpoint:
 1. Build and serve the repository using the commands above, then open
    http://localhost:8080/build/ with DevTools open.
 2. In **Sources**, open `src/main/native/main.cpp` and set a breakpoint on
-   `print("Hello from WASM");` inside `init()`.
+   `print("Hello from WASM: WebGPU initialized");` inside `init()`.
 3. Reload the page. When paused, inspect `persistent_storage` and
    `transient_storage`, including their `base`, `cap`, and `pos` fields.
 4. Try a breakpoint inside `frame()` or step into the arena functions in
    `core/base.h`.
 
 If initialization runs before the source files appear, set a temporary breakpoint
-on `inst.exports.init()` in `main.js`, reload, then set the C++ breakpoint and
+on `await init();` in `main.js`, reload, then set the C++ breakpoint and
 resume. No JavaScript edits are necessary.
 
 Enable **Pause on exceptions**, including **Pause on caught exceptions**, to stop

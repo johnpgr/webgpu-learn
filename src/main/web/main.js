@@ -1,5 +1,6 @@
-// Browser host: acquires the WebGPU adapter/device, manages canvas sizing,
-// wires the standard `webgpu.h` Wasm binding layer, and drives the animation loop.
+// Browser host: manages canvas sizing, wires the `webgpu.h` Wasm binding layer,
+// and drives the animation loop. WebGPU setup (instance, surface, adapter, device)
+// happens in C++ (see init in main.cpp).
 
 import { createWebGPUBindings } from "./webgpu.js";
 
@@ -9,23 +10,14 @@ const status = (msg) => {
 
 async function main() {
     if (!navigator.gpu) throw new Error("WebGPU not supported in this browser");
-
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) throw new Error("No GPU adapter found");
-    const device = await adapter.requestDevice();
-    device.lost.then((info) => status(`Device lost: ${info.message}`));
-    device.addEventListener("uncapturederror", (event) => {
-        console.error("WebGPU uncaptured error:", event.error);
-        status(`GPU Error: ${event.error.message}`);
-    });
-
-    const canvas = document.getElementById("canvas");
-    const context = canvas.getContext("webgpu");
-    const format = navigator.gpu.getPreferredCanvasFormat();
-    context.configure({ device, format, alphaMode: "opaque" });
+    // wgpuInstanceWaitAny blocks C++ by suspending wasm with JSPI.
+    if (!("Suspending" in WebAssembly && "promising" in WebAssembly)) {
+        throw new Error("WebAssembly JSPI not supported in this browser (needs Chrome/Edge 137+ or Firefox 153+)");
+    }
 
     // This host owns the canvas backing-store size. wgpuSurfaceConfigure ignores
     // the width/height in WGPUSurfaceConfiguration.
+    const canvas = document.getElementById("canvas");
     const resize = () => {
         const dpr = window.devicePixelRatio || 1;
         canvas.width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
@@ -38,13 +30,7 @@ async function main() {
     const mem = () => inst.exports.memory.buffer;
     const decoder = new TextDecoder();
 
-    const wgpu = createWebGPUBindings({
-        adapter,
-        device,
-        context,
-        format,
-        memory: () => inst.exports.memory,
-    });
+    const wgpu = createWebGPUBindings({ getExports: () => inst.exports });
 
     const imports = {
         env: {
@@ -56,13 +42,24 @@ async function main() {
     // Always load the latest build while developing.
     const result = await WebAssembly.instantiateStreaming(fetch("game.wasm", { cache: "no-store" }), imports);
     inst = result.instance;
-    inst.exports.init(wgpu.handles.device, wgpu.handles.surface);
-    status(`WebGPU ok (${format})`);
 
+    // Only init is entered through promising(), so only init may block in
+    // wgpuInstanceWaitAny (adapter/device setup). Nothing else may call into wasm
+    // until its promise settles.
+    const init = WebAssembly.promising(inst.exports.init);
+
+    status("initializing WebGPU…");
+    await init();
+    status("WebGPU ok");
+
+    // frame is called directly: it must never block. wgpuInstanceWaitAny inside it
+    // throws SuspendError (even with timeout 0); handle async results with
+    // AllowSpontaneous / AllowProcessEvents callbacks instead.
+    const frame = inst.exports.frame;
     let last = performance.now();
     const loop = (now) => {
         try {
-            inst.exports.frame((now - last) / 1000);
+            frame((now - last) / 1000);
         } catch (e) {
             // Wasm state is unreliable after a trap, so report once and stop the loop.
             console.error(e);

@@ -20,6 +20,33 @@ static_assert(sizeof(int) == 4);
 static_assert(sizeof(long long) == 8);
 static_assert(sizeof(void*) == 4, "These aliases target wasm32");
 
+// ----------------------------------------------------------------------------
+// Compiler intrinsics. Code uses these macros instead of compiler builtins
+// directly; each compiler maps them to its own builtin. A compiler without a
+// branch here fails to build instead of silently getting a wrong fallback.
+// ----------------------------------------------------------------------------
+
+#if defined(__clang__) || defined(__GNUC__)
+    #define OFFSET_OF(type, member) __builtin_offsetof(type, member)
+    #define TRAP() __builtin_trap()
+    #define MEMSET(dst, byte, size) __builtin_memset((dst), (byte), (size))
+    #define STRLEN(cstr) __builtin_strlen(cstr)
+    #define NAN_F32 __builtin_nanf("")
+#else
+    #error "core/base.h: unsupported compiler; map the intrinsic macros to its builtins"
+#endif
+
+// WebAssembly memory instructions (memory index 0). Sizes are in 64 KiB pages;
+// WASM_MEMORY_GROW returns the previous size, or (usz)-1 on failure.
+#if defined(__wasm__)
+    #if defined(__clang__)
+        #define WASM_MEMORY_SIZE() __builtin_wasm_memory_size(0)
+        #define WASM_MEMORY_GROW(pages) __builtin_wasm_memory_grow(0, (pages))
+    #else
+        #error "core/base.h: unsupported compiler for wasm memory intrinsics"
+    #endif
+#endif
+
 #define GPU(n) __attribute__((import_module("gpu"), import_name(#n)))
 #define ENV(n) __attribute__((import_module("env"), import_name(#n)))
 #define EXPORT(n) __attribute__((export_name(#n)))
@@ -29,7 +56,7 @@ static_assert(sizeof(void*) == 4, "These aliases target wasm32");
 #define WASM_PAGE_SIZE 65536u
 
 #ifdef DEBUG
-    #define ASSERT(c) do { if (!(c)) __builtin_trap(); } while(0)
+    #define ASSERT(c) do { if (!(c)) TRAP(); } while(0)
 #else
     #define ASSERT(c) ((void)0)
 #endif /* ifdef DEBUG */
@@ -49,10 +76,10 @@ inline char* os_reserve(usz size) {
         return nullptr;
     }
 
-    usz have = __builtin_wasm_memory_size(0) * WASM_PAGE_SIZE;
+    usz have = WASM_MEMORY_SIZE() * WASM_PAGE_SIZE;
     if (end > have) {
         usz pages = (end - have + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
-        if (__builtin_wasm_memory_grow(0, pages) == (usz)-1) {
+        if (WASM_MEMORY_GROW(pages) == (usz)-1) {
             ASSERT(!"Arena allocation fail: can't grow the arena");
             return nullptr;
         }
@@ -61,6 +88,11 @@ inline char* os_reserve(usz size) {
 
     return (char*)start;
 }
+
+ENV(print) void print(const char* str, usz len);
+
+template <usz N>
+static inline void print(const char (&s)[N]) { print(s, N - 1); }
 
 struct Arena {
     char* base;
@@ -84,7 +116,7 @@ inline void* arena_push_nz(Arena* a, usz size, usz align = 16) {
     ASSERT(align && (align & (align - 1)) == 0); // power of two
     usz p = (a->pos + (align - 1)) & ~(align - 1);
     if (p + size > a->cap || p + size < p) {
-        __builtin_trap(); // out of budget
+        TRAP(); // out of budget
     }
 
     a->pos = p + size;
@@ -95,7 +127,7 @@ inline void* arena_push_nz(Arena* a, usz size, usz align = 16) {
 
 inline void* arena_push_zero(Arena* a, usz size, usz align = 16) {
     void* p = arena_push_nz(a, size, align);
-    __builtin_memset(p, 0, size);
+    MEMSET(p, 0, size);
 
     return p;
 }
@@ -111,7 +143,7 @@ inline Arena arena_sub(Arena* parent, usz cap) {
 
 inline void arena_reset(Arena* a) {
 #ifdef DEBUG
-    __builtin_memset(a->base, 0xCD, a->pos); // poison: catches use-after-reset
+    MEMSET(a->base, 0xCD, a->pos); // poison: catches use-after-reset
 #endif
     a->pos = 0;
 }
@@ -148,7 +180,7 @@ inline Arena_Mark arena_mark(Arena* a) {
 inline void arena_pop_to(Arena_Mark m) {
     ASSERT(m.pos <= m.arena->pos); // marks must be popped in LIFO order
 #ifdef DEBUG
-    __builtin_memset(m.arena->base + m.pos, 0xCD, m.arena->pos - m.pos);
+    MEMSET(m.arena->base + m.pos, 0xCD, m.arena->pos - m.pos);
 #endif
     m.arena->pos = m.pos;
 }

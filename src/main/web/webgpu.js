@@ -17,6 +17,40 @@ const OPTIONAL_BOOL_UNDEFINED = 2;
 const SURFACE_STATUS_SUCCESS_OPTIMAL = 1;
 const SURFACE_STATUS_ERROR = 6;
 
+// emdawnwebgpu extension sType (Emscripten enums start at 0x0004_0000).
+const STYPE_EMSCRIPTEN_CANVAS_SELECTOR = 0x00040000;
+const STATUS_SUCCESS = 1;
+const CALLBACK_MODE_WAIT_ANY_ONLY = 1;
+const CALLBACK_MODE_ALLOW_PROCESS_EVENTS = 2;
+const CALLBACK_MODE_ALLOW_SPONTANEOUS = 3;
+const WAIT_STATUS_SUCCESS = 1;
+const WAIT_STATUS_TIMED_OUT = 2;
+const WAIT_STATUS_ERROR = 3;
+const REQUEST_ADAPTER_STATUS_SUCCESS = 1;
+const REQUEST_ADAPTER_STATUS_UNAVAILABLE = 3;
+const REQUEST_ADAPTER_STATUS_ERROR = 4;
+const REQUEST_DEVICE_STATUS_SUCCESS = 1;
+const REQUEST_DEVICE_STATUS_ERROR = 3;
+const FEATURE_LEVEL_COMPATIBILITY = 1;
+const FEATURE_LEVEL_CORE = 2;
+const INSTANCE_FEATURE_TIMED_WAIT_ANY = 1;
+const MAX_TIMED_WAIT_ANY_COUNT = 64;
+const ERROR_TYPE_VALIDATION = 2;
+const ERROR_TYPE_OUT_OF_MEMORY = 3;
+const ERROR_TYPE_INTERNAL = 4;
+const ERROR_TYPE_UNKNOWN = 5;
+const DEVICE_LOST_REASON_UNKNOWN = 1;
+const DEVICE_LOST_REASON_DESTROYED = 2;
+const PRESENT_MODE_FIFO = 1;
+const COMPOSITE_ALPHA_OPAQUE = 1;
+const COMPOSITE_ALPHA_PREMULTIPLIED = 2;
+// CopySrc | CopyDst | TextureBinding | RenderAttachment. StorageBinding is left
+// out: it depends on the format (bgra8unorm needs a feature).
+const CANVAS_TEXTURE_USAGES = 0x01 | 0x02 | 0x04 | 0x10;
+// Bytes of wasm memory the host reserves (once) for strings passed to callbacks.
+// Longer messages are truncated at a UTF-8 character boundary.
+const CALLBACK_SCRATCH_SIZE = 64 * 1024;
+
 // Enum lookup tables, indexed by the WGPU* enum value (values identical to
 // webgpu-headers). `undefined` = Undefined/unset; `null` = the Undefined value of the
 // *BindingType enums (1), which also means "use the WebGPU default".
@@ -362,6 +396,66 @@ const TEXTURE_FORMAT_TO_ENUM = new Map(
     TEXTURE_FORMATS.map((name, index) => [name, index]),
 );
 
+// WGPUFeatureName -> GPUFeatureName.
+const FEATURE_NAMES = [
+    undefined,
+    "core-features-and-limits",
+    "depth-clip-control",
+    "depth32float-stencil8",
+    "texture-compression-bc",
+    "texture-compression-bc-sliced-3d",
+    "texture-compression-etc2",
+    "texture-compression-astc",
+    "texture-compression-astc-sliced-3d",
+    "timestamp-query",
+    "indirect-first-instance",
+    "shader-f16",
+    "rg11b10ufloat-renderable",
+    "bgra8unorm-storage",
+    "float32-filterable",
+    "float32-blendable",
+    "clip-distances",
+    "dual-source-blending",
+    "subgroups",
+    "texture-formats-tier1",
+    "texture-formats-tier2",
+    "primitive-index",
+    "texture-component-swizzle",
+    "subgroup-size-control",
+    "texture-compression-unaligned",
+    "atomic-vec2u-min-max",
+];
+
+// WGPULimits fields in declaration order; offsets follow wasm32 C layout (u64 is
+// 8-byte aligned), starting after nextInChain. Checked against webgpu.h by
+// static_asserts on the C++ side (e.g. maxBufferSize at 96, size 152).
+const LIMIT_FIELDS = (() => {
+    const fields = [
+        ["maxTextureDimension1D", 32], ["maxTextureDimension2D", 32], ["maxTextureDimension3D", 32],
+        ["maxTextureArrayLayers", 32], ["maxBindGroups", 32], ["maxBindGroupsPlusVertexBuffers", 32],
+        ["maxBindingsPerBindGroup", 32], ["maxDynamicUniformBuffersPerPipelineLayout", 32],
+        ["maxDynamicStorageBuffersPerPipelineLayout", 32], ["maxSampledTexturesPerShaderStage", 32],
+        ["maxSamplersPerShaderStage", 32], ["maxStorageBuffersPerShaderStage", 32],
+        ["maxStorageTexturesPerShaderStage", 32], ["maxUniformBuffersPerShaderStage", 32],
+        ["maxUniformBufferBindingSize", 64], ["maxStorageBufferBindingSize", 64],
+        ["minUniformBufferOffsetAlignment", 32], ["minStorageBufferOffsetAlignment", 32],
+        ["maxVertexBuffers", 32], ["maxBufferSize", 64], ["maxVertexAttributes", 32],
+        ["maxVertexBufferArrayStride", 32], ["maxInterStageShaderVariables", 32],
+        ["maxColorAttachments", 32], ["maxColorAttachmentBytesPerSample", 32],
+        ["maxComputeWorkgroupStorageSize", 32], ["maxComputeInvocationsPerWorkgroup", 32],
+        ["maxComputeWorkgroupSizeX", 32], ["maxComputeWorkgroupSizeY", 32],
+        ["maxComputeWorkgroupSizeZ", 32], ["maxComputeWorkgroupsPerDimension", 32],
+        ["maxImmediateSize", 32],
+    ];
+    let offset = 4;
+    return fields.map(([name, bits]) => {
+        if (bits === 64) offset = (offset + 7) & ~7;
+        const field = { name, bits, offset };
+        offset += bits / 8;
+        return field;
+    });
+})();
+
 function decodeEnum(table, value, name) {
     const resolved = table[value >>> 0];
     if (resolved === null) {
@@ -488,10 +582,17 @@ class HandleTable {
         slot.refs++;
     }
 
+    isLive(handle) {
+        const h = handle >>> 0;
+        const slot = this.slots[h & 0xfffff];
+        return h !== 0 && !!slot && slot.value !== null && slot.generation === ((h >>> 20) & 0xfff);
+    }
+
+    // Returns the object if this dropped the last reference, otherwise null.
     release(handle) {
         const h = handle >>> 0;
         if (h === 0) {
-            return;
+            return null;
         }
         const index = h & 0xfffff;
         const generation = (h >>> 20) & 0xfff;
@@ -500,28 +601,292 @@ class HandleTable {
             throw new TypeError(`Double release or invalid WebGPU handle: 0x${h.toString(16)}`);
         }
         if (--slot.refs > 0) {
-            return;
+            return null;
         }
+        const object = slot.value;
         slot.value = null;
         slot.generation = ((slot.generation + 1) & 0xfff) || 1;
         this.freeSlots.push(index);
+        return object;
     }
 }
 
-export function createWebGPUBindings({ adapter, device, context, format, memory }) {
+// `getExports` returns the wasm instance's exports. It is called lazily (the
+// imports are built before instantiation). Needed exports: `memory`,
+// `__indirect_function_table` (link with --export-table) to call C callbacks,
+// and `wgpu_host_alloc` (defined in webgpu.h).
+//
+// wgpuInstanceWaitAny is a JSPI suspending import: wasm must be entered through
+// WebAssembly.promising(...) for it to block.
+export function createWebGPUBindings({ getExports }) {
     const handles = new HandleTable();
     const decoder = new TextDecoder();
-
-    const adapterHandle = handles.store(adapter);
-    const deviceHandle = handles.store(device);
-    const surfaceHandle = handles.store(context);
-    const preferredFormatEnum = TEXTURE_FORMAT_TO_ENUM.get(format) ?? 0;
+    const encoder = new TextEncoder();
     let surfaceErrorLogged = false;
 
     // Always construct views from the live memory.buffer so wasm memory.grow
     // never leaves us reading from a detached ArrayBuffer.
-    const buffer = () => memory().buffer;
+    const buffer = () => getExports().memory.buffer;
     const view = () => new DataView(buffer());
+
+    // ---- Calling C callbacks ------------------------------------------------
+    // Struct arguments passed by value (WGPUStringView) are passed as a pointer to
+    // a caller-owned copy in the wasm32 C ABI, so the host writes them into a
+    // scratch region. The region is used like a stack, so a callback that makes
+    // another callback fire (e.g. via wgpuInstanceProcessEvents) is safe.
+    let scratchBase = 0;
+    let scratchTop = 0;
+
+    function scratchAlloc(size, align) {
+        if (scratchBase === 0) {
+            scratchBase = getExports().wgpu_host_alloc(CALLBACK_SCRATCH_SIZE) >>> 0;
+            if (scratchBase === 0) throw new RangeError("wgpu_host_alloc failed");
+            scratchTop = scratchBase;
+        }
+        const p = (scratchTop + align - 1) & ~(align - 1);
+        if (p + size > scratchBase + CALLBACK_SCRATCH_SIZE) {
+            throw new RangeError("WebGPU callback scratch space exhausted (callbacks nested too deeply)");
+        }
+        scratchTop = p + size;
+        return p;
+    }
+
+    // Writes a WGPUStringView (and its bytes) to scratch; returns the view's address.
+    function scratchStringView(text) {
+        const sv = scratchAlloc(8, 4);
+        const data = scratchTop;
+        const room = scratchBase + CALLBACK_SCRATCH_SIZE - data;
+        const { written } = encoder.encodeInto(text ?? "", new Uint8Array(buffer(), data, room));
+        scratchTop = data + written;
+        const dv = view();
+        dv.setUint32(sv, written > 0 ? data : 0, true);
+        dv.setUint32(sv + 4, written, true);
+        return sv;
+    }
+
+    // Calls a C function pointer with arguments built by `makeArgs` (which may use
+    // scratch); scratch is released when the callback returns.
+    function callC(fnPtr, makeArgs) {
+        if ((fnPtr >>> 0) === 0) return;
+        const mark = scratchTop;
+        try {
+            const fn = getExports().__indirect_function_table.get(fnPtr >>> 0);
+            fn(...makeArgs());
+        } finally {
+            if (scratchBase !== 0) scratchTop = mark;
+        }
+    }
+
+    function readCallbackInfo(dv, p) {
+        // { nextInChain, mode, callback, userdata1, userdata2 }
+        return {
+            mode: dv.getUint32(p + 4, true),
+            callback: dv.getUint32(p + 8, true),
+            userdata1: dv.getUint32(p + 12, true),
+            userdata2: dv.getUint32(p + 16, true),
+        };
+    }
+
+    // Calls a WGPURequest{Adapter,Device}Callback: (status, object, message, ud1, ud2).
+    function callRequestCallback(info, status, objectHandle, message) {
+        callC(info.callback, () => [status, objectHandle, scratchStringView(message), info.userdata1, info.userdata2]);
+    }
+
+    // ---- Futures --------------------------------------------------------------
+    // A future completes when its promise settles. Its callback fires according
+    // to its WGPUCallbackMode: AllowSpontaneous right away; AllowProcessEvents in
+    // wgpuInstanceProcessEvents or wgpuInstanceWaitAny; WaitAnyOnly only in
+    // wgpuInstanceWaitAny. Completed futures are kept so a later WaitAny on them
+    // reports completed.
+    let nextFutureId = 1n;
+    const futures = new Map();
+
+    // `promise` must resolve (never reject) to the function that fires the callback.
+    function createFuture(mode, promise) {
+        if (mode !== CALLBACK_MODE_WAIT_ANY_ONLY && mode !== CALLBACK_MODE_ALLOW_PROCESS_EVENTS
+            && mode !== CALLBACK_MODE_ALLOW_SPONTANEOUS) {
+            throw new TypeError(`Invalid WGPUCallbackMode: ${mode}`);
+        }
+        const id = nextFutureId++;
+        const future = { mode, ready: false, fired: false, fire: null, settled: null };
+        future.settled = promise.then((fire) => {
+            future.ready = true;
+            future.fire = fire;
+            if (mode === CALLBACK_MODE_ALLOW_SPONTANEOUS) fireFuture(future);
+        });
+        futures.set(id, future);
+        return id;
+    }
+
+    function fireFuture(future) {
+        if (!future.ready || future.fired) return;
+        future.fired = true;
+        future.fire();
+    }
+
+    function errorMessage(error) {
+        return String(error?.message ?? error);
+    }
+
+    // ---- Instance -----------------------------------------------------------
+    function waitAny(instanceH, futureCount, futuresPtr, timeoutNS) {
+        const instance = handles.get(instanceH, "WGPUInstance");
+        const count = futureCount >>> 0;
+        const p = futuresPtr >>> 0;
+        const timeout = BigInt.asUintN(64, timeoutNS);
+        if (count === 0) {
+            return WAIT_STATUS_SUCCESS;
+        }
+
+        // WGPUFutureWaitInfo is { WGPUFuture future (u64), WGPUBool completed } = 16 bytes.
+        const waited = [];
+        {
+            const dv = view();
+            for (let i = 0; i < count; i++) {
+                const id = dv.getBigUint64(p + i * 16, true);
+                const future = futures.get(id);
+                if (future === undefined) {
+                    console.error(`wgpuInstanceWaitAny: unknown WGPUFuture id ${id}`);
+                    return WAIT_STATUS_ERROR;
+                }
+                waited.push(future);
+            }
+        }
+
+        // Fires the ready callbacks, then marks completed futures.
+        const poll = () => {
+            for (const future of waited) fireFuture(future);
+            const dv = view(); // callbacks may have grown memory
+            let any = false;
+            waited.forEach((future, i) => {
+                if (future.fired) {
+                    dv.setUint32(p + i * 16 + 8, 1, true);
+                    any = true;
+                }
+            });
+            return any;
+        };
+
+        if (poll()) return WAIT_STATUS_SUCCESS;
+        if (timeout === 0n) return WAIT_STATUS_TIMED_OUT;
+        if (!instance.timedWaitAny) {
+            console.error("wgpuInstanceWaitAny with a timeout needs WGPUInstanceFeatureName::TimedWaitAny in WGPUInstanceDescriptor");
+            return WAIT_STATUS_ERROR;
+        }
+        if (count > instance.timedWaitAnyMaxCount) {
+            console.error(`wgpuInstanceWaitAny: ${count} futures exceeds timedWaitAnyMaxCount (${instance.timedWaitAnyMaxCount})`);
+            return WAIT_STATUS_ERROR;
+        }
+
+        // Returning a promise suspends the wasm stack (JSPI) until it settles.
+        const waits = waited.map((future) => future.settled);
+        if (timeout !== WHOLE_SIZE) {
+            const ms = Math.min(Number(timeout / 1000000n), 0x7fffffff);
+            waits.push(new Promise((resolve) => setTimeout(resolve, ms)));
+        }
+        return Promise.race(waits).then(() => (poll() ? WAIT_STATUS_SUCCESS : WAIT_STATUS_TIMED_OUT));
+    }
+
+    // ---- Devices ------------------------------------------------------------
+    const deviceLostFutures = new WeakMap(); // GPUDevice -> WGPUFuture id
+
+    function deviceTypeOfError(error) {
+        if (typeof GPUValidationError !== "undefined" && error instanceof GPUValidationError) return ERROR_TYPE_VALIDATION;
+        if (typeof GPUOutOfMemoryError !== "undefined" && error instanceof GPUOutOfMemoryError) return ERROR_TYPE_OUT_OF_MEMORY;
+        if (typeof GPUInternalError !== "undefined" && error instanceof GPUInternalError) return ERROR_TYPE_INTERNAL;
+        return ERROR_TYPE_UNKNOWN;
+    }
+
+    // Callbacks taking `WGPUDevice const* device`: the pointed-to handle is null
+    // once the device's last reference is released.
+    function scratchDevicePointer(deviceH) {
+        const ptr = scratchAlloc(4, 4);
+        view().setUint32(ptr, handles.isLive(deviceH) ? deviceH : 0, true);
+        return ptr;
+    }
+
+    function setUpDevice(deviceH, device, lostInfo, errorInfo) {
+        const lostCallback = lostInfo?.callback ?? 0;
+        const lostMode = lostCallback !== 0 ? lostInfo.mode : CALLBACK_MODE_ALLOW_SPONTANEOUS;
+        const lostFuture = createFuture(lostMode, device.lost.then((info) => () => {
+            const reason = info.reason === "destroyed" ? DEVICE_LOST_REASON_DESTROYED : DEVICE_LOST_REASON_UNKNOWN;
+            callC(lostCallback, () => [
+                scratchDevicePointer(deviceH), reason, scratchStringView(info.message),
+                lostInfo.userdata1, lostInfo.userdata2,
+            ]);
+        }));
+        deviceLostFutures.set(device, lostFuture);
+
+        // Without a callback the browser's default (a console warning) stays.
+        if (errorInfo.callback !== 0) {
+            device.addEventListener("uncapturederror", (event) => {
+                event.preventDefault();
+                callC(errorInfo.callback, () => [
+                    scratchDevicePointer(deviceH), deviceTypeOfError(event.error),
+                    scratchStringView(event.error.message), errorInfo.userdata1, errorInfo.userdata2,
+                ]);
+            });
+        }
+    }
+
+    function readRequiredLimits(dv, p, adapter) {
+        const limits = {};
+        for (const { name, bits, offset } of LIMIT_FIELDS) {
+            const undefinedValue = bits === 64 ? WHOLE_SIZE : UINT32_UNDEFINED;
+            const raw = bits === 64 ? dv.getBigUint64(p + offset, true) : dv.getUint32(p + offset, true);
+            if (raw === undefinedValue) continue;
+            if (!(name in adapter.limits)) {
+                // e.g. maxImmediateSize: not exposed by browsers yet. Copying all of
+                // wgpuAdapterGetLimits into requiredLimits gives 0 here, which is fine.
+                if (raw !== 0 && raw !== 0n) console.warn(`requiredLimits.${name} is not supported by this browser; ignored`);
+                continue;
+            }
+            limits[name] = bits === 64 ? toSafeSize64(raw, `requiredLimits.${name}`) : raw;
+        }
+        return limits;
+    }
+
+    function writeLimits(limits, ptr) {
+        const dv = view();
+        const p = ptr >>> 0;
+        for (const { name, bits, offset } of LIMIT_FIELDS) {
+            const value = limits[name] ?? 0;
+            if (bits === 64) {
+                dv.setBigUint64(p + offset, BigInt(value), true);
+            } else {
+                dv.setUint32(p + offset, value, true);
+            }
+        }
+        return STATUS_SUCCESS;
+    }
+
+    // ---- Surface capabilities ---------------------------------------------------
+    // Arrays live in wasm memory owned by the host, allocated once and shared by
+    // every WGPUSurfaceCapabilities (FreeMembers is a no-op).
+    let surfaceCapabilityArrays = null;
+
+    function getSurfaceCapabilityArrays() {
+        if (surfaceCapabilityArrays !== null) return surfaceCapabilityArrays;
+        const preferred = TEXTURE_FORMAT_TO_ENUM.get(navigator.gpu.getPreferredCanvasFormat());
+        const formats = [preferred];
+        for (const name of ["bgra8unorm", "rgba8unorm", "rgba16float"]) {
+            const value = TEXTURE_FORMAT_TO_ENUM.get(name);
+            if (value !== preferred) formats.push(value);
+        }
+        const presentModes = [PRESENT_MODE_FIFO];
+        const alphaModes = [COMPOSITE_ALPHA_OPAQUE, COMPOSITE_ALPHA_PREMULTIPLIED];
+        const all = [...formats, ...presentModes, ...alphaModes];
+        const base = getExports().wgpu_host_alloc(all.length * 4) >>> 0;
+        if (base === 0) throw new RangeError("wgpu_host_alloc failed");
+        const dv = view();
+        all.forEach((value, i) => dv.setUint32(base + i * 4, value, true));
+        surfaceCapabilityArrays = {
+            formats: base, formatCount: formats.length,
+            presentModes: base + formats.length * 4, presentModeCount: presentModes.length,
+            alphaModes: base + (formats.length + presentModes.length) * 4, alphaModeCount: alphaModes.length,
+        };
+        return surfaceCapabilityArrays;
+    }
 
     function readString(dv, offset) {
         const ptr = dv.getUint32(offset, true);
@@ -671,7 +1036,181 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
     };
 
     const imports = {
+        // Instance
+        wgpuCreateInstance(descPtr) {
+            if (!navigator.gpu) {
+                console.error("wgpuCreateInstance: WebGPU is not supported by this browser");
+                return 0;
+            }
+            const instance = { timedWaitAny: false, timedWaitAnyMaxCount: 0 };
+            const p = descPtr >>> 0;
+            if (p !== 0) {
+                const dv = view();
+                const featureCount = dv.getUint32(p + 4, true);
+                const featuresPtr = dv.getUint32(p + 8, true);
+                for (let i = 0; i < featureCount; i++) {
+                    const feature = dv.getUint32(featuresPtr + i * 4, true);
+                    if (feature !== INSTANCE_FEATURE_TIMED_WAIT_ANY) {
+                        console.error(`wgpuCreateInstance: instance feature ${feature} is not supported`);
+                        return 0;
+                    }
+                    instance.timedWaitAny = true;
+                }
+                const limitsPtr = dv.getUint32(p + 12, true);
+                if (limitsPtr !== 0) {
+                    const requested = dv.getUint32(limitsPtr + 4, true);
+                    if (requested > MAX_TIMED_WAIT_ANY_COUNT) {
+                        console.error(`wgpuCreateInstance: timedWaitAnyMaxCount ${requested} exceeds the supported ${MAX_TIMED_WAIT_ANY_COUNT}`);
+                        return 0;
+                    }
+                    instance.timedWaitAnyMaxCount = requested;
+                }
+            }
+            if (instance.timedWaitAny && instance.timedWaitAnyMaxCount === 0) {
+                instance.timedWaitAnyMaxCount = MAX_TIMED_WAIT_ANY_COUNT;
+            }
+            return handles.store(instance);
+        },
+
+        wgpuGetInstanceLimits(limitsPtr) {
+            view().setUint32((limitsPtr >>> 0) + 4, MAX_TIMED_WAIT_ANY_COUNT, true);
+            return STATUS_SUCCESS;
+        },
+
+        wgpuHasInstanceFeature(feature) {
+            return (feature >>> 0) === INSTANCE_FEATURE_TIMED_WAIT_ANY ? 1 : 0;
+        },
+
+        // WGPUInstance
+        wgpuInstanceCreateSurface(instanceH, descPtr) {
+            handles.get(instanceH, "WGPUInstance");
+            const dv = view();
+            let selector;
+            for (let chain = dv.getUint32(descPtr >>> 0, true); chain !== 0; chain = dv.getUint32(chain, true)) {
+                const sType = dv.getUint32(chain + 4, true);
+                if (sType !== STYPE_EMSCRIPTEN_CANVAS_SELECTOR) {
+                    throw new TypeError(`Unsupported WGPUSurfaceDescriptor chain sType: 0x${sType.toString(16)}`);
+                }
+                selector = readString(dv, chain + 8);
+            }
+            if (selector === undefined) {
+                throw new TypeError("WGPUSurfaceDescriptor needs a chained WGPUEmscriptenSurfaceSourceCanvasHTMLSelector");
+            }
+            const canvas = document.querySelector(selector);
+            if (!(canvas instanceof HTMLCanvasElement)) {
+                throw new TypeError(`wgpuInstanceCreateSurface: "${selector}" does not match a <canvas>`);
+            }
+            return handles.store(canvas.getContext("webgpu"));
+        },
+
+        wgpuInstanceRequestAdapter(instanceH, optionsPtr, callbackInfoPtr) {
+            handles.get(instanceH, "WGPUInstance");
+            const dv = view();
+            const p = optionsPtr >>> 0;
+            const options = {};
+            if (p !== 0) {
+                const featureLevel = dv.getUint32(p + 4, true);
+                if (featureLevel === FEATURE_LEVEL_COMPATIBILITY) {
+                    options.featureLevel = "compatibility";
+                } else if (featureLevel !== 0 && featureLevel !== FEATURE_LEVEL_CORE) {
+                    throw new RangeError(`Invalid WGPUFeatureLevel value: ${featureLevel}`);
+                }
+                const powerPreference = dv.getUint32(p + 8, true);
+                if (powerPreference === 1) options.powerPreference = "low-power";
+                else if (powerPreference === 2) options.powerPreference = "high-performance";
+                if (dv.getUint32(p + 12, true) !== 0) options.forceFallbackAdapter = true;
+                // backendType (p + 16) and compatibleSurface (p + 20) do not apply in a browser.
+            }
+            const info = readCallbackInfo(dv, callbackInfoPtr >>> 0);
+            const promise = navigator.gpu.requestAdapter(options).then(
+                (adapter) => adapter
+                    ? () => callRequestCallback(info, REQUEST_ADAPTER_STATUS_SUCCESS, handles.store(adapter), "")
+                    : () => callRequestCallback(info, REQUEST_ADAPTER_STATUS_UNAVAILABLE, 0, "No WebGPU adapter is available"),
+                (error) => () => callRequestCallback(info, REQUEST_ADAPTER_STATUS_ERROR, 0, errorMessage(error)),
+            );
+            return createFuture(info.mode, promise);
+        },
+
+        wgpuInstanceWaitAny: new WebAssembly.Suspending(waitAny),
+
+        wgpuInstanceProcessEvents(instanceH) {
+            handles.get(instanceH, "WGPUInstance");
+            for (const future of futures.values()) {
+                if (future.mode === CALLBACK_MODE_ALLOW_PROCESS_EVENTS) fireFuture(future);
+            }
+        },
+
+        wgpuInstanceRelease: release,
+        wgpuInstanceAddRef: addRef,
+
+        // WGPUAdapter
+        wgpuAdapterGetLimits(adapterH, limitsPtr) {
+            return writeLimits(handles.get(adapterH, "WGPUAdapter").limits, limitsPtr);
+        },
+
+        wgpuAdapterRequestDevice(adapterH, descPtr, callbackInfoPtr) {
+            const adapter = handles.get(adapterH, "WGPUAdapter");
+            const dv = view();
+            const p = descPtr >>> 0;
+            const desc = {};
+            let lostInfo = null;
+            let errorInfo = { callback: 0 };
+            if (p !== 0) {
+                const label = readString(dv, p + 4);
+                if (label !== undefined) desc.label = label;
+                const featureCount = dv.getUint32(p + 12, true);
+                const featuresPtr = dv.getUint32(p + 16, true);
+                if (featureCount > 0) {
+                    desc.requiredFeatures = [];
+                    for (let i = 0; i < featureCount; i++) {
+                        desc.requiredFeatures.push(requireEnum(FEATURE_NAMES, dv.getUint32(featuresPtr + i * 4, true), "WGPUFeatureName"));
+                    }
+                }
+                const limitsPtr = dv.getUint32(p + 20, true);
+                if (limitsPtr !== 0) desc.requiredLimits = readRequiredLimits(dv, limitsPtr, adapter);
+                const queueLabel = readString(dv, p + 28); // defaultQueue at p + 24
+                if (queueLabel !== undefined) desc.defaultQueue = { label: queueLabel };
+                lostInfo = readCallbackInfo(dv, p + 36);
+                // WGPUUncapturedErrorCallbackInfo at p + 56: { nextInChain, callback, userdata1, userdata2 }
+                errorInfo = {
+                    callback: dv.getUint32(p + 60, true),
+                    userdata1: dv.getUint32(p + 64, true),
+                    userdata2: dv.getUint32(p + 68, true),
+                };
+            }
+            const info = readCallbackInfo(dv, callbackInfoPtr >>> 0);
+            const promise = adapter.requestDevice(desc).then(
+                (device) => () => {
+                    const deviceH = handles.store(device);
+                    setUpDevice(deviceH, device, lostInfo, errorInfo);
+                    callRequestCallback(info, REQUEST_DEVICE_STATUS_SUCCESS, deviceH, "");
+                },
+                (error) => () => callRequestCallback(info, REQUEST_DEVICE_STATUS_ERROR, 0, errorMessage(error)),
+            );
+            return createFuture(info.mode, promise);
+        },
+
         // WGPUSurface
+        wgpuSurfaceGetCapabilities(surfaceH, adapterH, capabilitiesPtr) {
+            handles.get(surfaceH, "WGPUSurface");
+            handles.get(adapterH, "WGPUAdapter");
+            const arrays = getSurfaceCapabilityArrays();
+            const p = capabilitiesPtr >>> 0;
+            const dv = view();
+            dv.setBigUint64(p + 8, BigInt(CANVAS_TEXTURE_USAGES), true);
+            dv.setUint32(p + 16, arrays.formatCount, true);
+            dv.setUint32(p + 20, arrays.formats, true);
+            dv.setUint32(p + 24, arrays.presentModeCount, true);
+            dv.setUint32(p + 28, arrays.presentModes, true);
+            dv.setUint32(p + 32, arrays.alphaModeCount, true);
+            dv.setUint32(p + 36, arrays.alphaModes, true);
+            return STATUS_SUCCESS;
+        },
+
+        wgpuSurfaceCapabilitiesFreeMembers() {
+            // The arrays are shared and owned by the host.
+        },
+
         wgpuSurfaceConfigure(surfaceH, configPtr) {
             const ctx = handles.get(surfaceH, "WGPUSurface");
             const p = configPtr >>> 0;
@@ -727,12 +1266,10 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             }
         },
 
-        wgpuSurfaceGetPreferredFormat() {
-            return preferredFormatEnum;
-        },
-
-        wgpuSurfacePresent() {
+        wgpuSurfacePresent(surfaceH) {
             // Browser canvases present automatically at the end of the animation frame.
+            handles.get(surfaceH, "WGPUSurface");
+            return STATUS_SUCCESS;
         },
 
         wgpuSurfaceRelease: release,
@@ -744,6 +1281,16 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
         wgpuDeviceGetQueue(deviceH) {
             const dev = handles.get(deviceH, "WGPUDevice");
             return handles.store(dev.queue);
+        },
+
+        wgpuDeviceGetLimits(deviceH, limitsPtr) {
+            return writeLimits(handles.get(deviceH, "WGPUDevice").limits, limitsPtr);
+        },
+
+        wgpuDeviceGetLostFuture(deviceH) {
+            const id = deviceLostFutures.get(handles.get(deviceH, "WGPUDevice"));
+            if (id === undefined) throw new TypeError("wgpuDeviceGetLostFuture: device has no lost future");
+            return id;
         },
 
         wgpuDeviceCreateBuffer(deviceH, descPtr) {
@@ -1152,7 +1699,10 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             handles.get(deviceH, "WGPUDevice").destroy();
         },
 
-        wgpuDeviceRelease: release,
+        // As in the official API, releasing the last reference destroys the device.
+        wgpuDeviceRelease(deviceH) {
+            handles.release(deviceH)?.destroy();
+        },
         wgpuDeviceAddRef: addRef,
 
         // WGPUBuffer
@@ -1541,12 +2091,5 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
         wgpuQueueAddRef: addRef,
     };
 
-    return {
-        imports,
-        handles: {
-            adapter: adapterHandle,
-            device: deviceHandle,
-            surface: surfaceHandle,
-        },
-    };
+    return { imports };
 }

@@ -1,19 +1,19 @@
 #include "core/base.h"
 #include "webgpu.h"
 
-ENV(print) void print(const char* str, usz len);
-
-template <usz N>
-static void print(const char (&s)[N]) { print(s, N - 1); }
-
 static Arena persistent_storage;
 static Arena transient_storage;
 
-EXPORT(init) void init(WGPUDevice, WGPUSurface) {
+static WGPUInstance instance;
+
+EXPORT(init) void init() {
     persistent_storage = make_arena(MB(64));
     transient_storage = make_arena(MB(8));
-    
-    print("Hello from WASM");
+
+    WGPUInstanceDescriptor desc = { .nextInChain = nullptr };
+    instance = wgpuCreateInstance(&desc);
+
+    print("Hello, World!");
 }
 
 EXPORT(frame) void frame(float) {
