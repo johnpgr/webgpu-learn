@@ -1,7 +1,5 @@
 #pragma once
 
-#include "../core/base.h"
-
 // ============================================================================
 // webgpu.h C/C++ Binding Layer for Wasm32
 //
@@ -13,7 +11,7 @@
 // - Types & descriptors use the `WGPU` prefix and camelCase fields.
 // - Enums & bitflags are `enum class WGPU<Type>` with unprefixed values: `WGPUTextureFormat::R8Unorm`.
 //   Names starting with a digit get a `D` prefix (`WGPUTextureDimension::D2`).
-// - Functions use `wgpu<Object><Method>` (imported via `GPU(...)` from `core/base.h`).
+// - Functions use `wgpu<Object><Method>` (imported via `GPU(...)` from `base/base.h`).
 // - Every object type has wgpu<Object>AddRef and wgpu<Object>Release.
 // - Handles are 32-bit ids into a table in the JS host, not pointers.
 //

@@ -33,7 +33,7 @@ static_assert(sizeof(void*) == 4, "These aliases target wasm32");
     #define STRLEN(cstr) __builtin_strlen(cstr)
     #define NAN_F32 __builtin_nanf("")
 #else
-    #error "core/base.h: unsupported compiler; map the intrinsic macros to its builtins"
+    #error "base/base.h: unsupported compiler; map the intrinsic macros to its builtins"
 #endif
 
 // WebAssembly memory instructions (memory index 0). Sizes are in 64 KiB pages;
@@ -43,7 +43,7 @@ static_assert(sizeof(void*) == 4, "These aliases target wasm32");
         #define WASM_MEMORY_SIZE() __builtin_wasm_memory_size(0)
         #define WASM_MEMORY_GROW(pages) __builtin_wasm_memory_grow(0, (pages))
     #else
-        #error "core/base.h: unsupported compiler for wasm memory intrinsics"
+        #error "base/base.h: unsupported compiler for wasm memory intrinsics"
     #endif
 #endif
 

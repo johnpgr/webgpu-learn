@@ -22,7 +22,7 @@ Open http://localhost:8080/build/. Hard-refresh once (Cmd+Shift+R on macOS) if y
 ## Debug C++ in Chrome
 
 The default build uses `-O0 -g -DDEBUG`: no compiler optimization, embedded DWARF
-debug symbols, and the assertions in `core/base.h` enabled. This uses the existing
+debug symbols, and the assertions in `base/base.h` enabled. This uses the existing
 Clang and wasm-ld toolchain; no Emscripten or additional JavaScript is needed.
 
 One-time browser setup:
@@ -43,7 +43,7 @@ To try a breakpoint:
    `transient_storage`, including each arena's `current` block and its
    `capacity`, `base_pos`, and `pos` fields.
 4. Try a breakpoint inside `frame()` or step into the arena functions in
-   `core/base_arena.h`.
+   `base/base_arena.h`.
 
 If initialization runs before the source files appear, set a temporary breakpoint
 on `await init();` in `main.js`, reload, then set the C++ breakpoint and
@@ -63,7 +63,7 @@ separate tools. For details, see [Chrome's WASM debugging guide](https://develop
 
 ## Arena memory
 
-`core/base_arena.h` adapts RAD Debugger's chained arenas to Wasm linear memory.
+`base/base_arena.h` adapts RAD Debugger's chained arenas to Wasm linear memory.
 `arena_alloc(block_size)` creates the first block; the block size includes a
 128-byte header. An allocation that does not fit adds another block without
 moving earlier allocations. Larger individual requests get larger blocks.
@@ -84,17 +84,8 @@ fill discarded allocations with `0xCD` to help identify stale data.
 Backing blocks remain owned by their arena for the module's lifetime. Wasm
 linear memory cannot shrink, so arenas should be created once and reused.
 The allocator is single-threaded. The game and WebGPU bridge share one
-backing allocator in `core/base.h`; no libc, WASI, or Emscripten is required.
+backing allocator in `base/base.h`; no libc, WASI, or Emscripten is required.
 The adapted source's MIT license is in `LICENSES/raddebugger.txt`.
-
-Run allocation and callback regression tests with Clang, wasm-ld, and a Node
-version supporting WebAssembly JSPI:
-
-```sh
-./tests/run.sh
-```
-
-The tests compile and execute both debug and optimized release Wasm modules.
 
 ## Printing and strings
 
@@ -102,9 +93,7 @@ Headers do not include each other. The translation unit includes layers in
 dependency order, and the `base` layer never names a `lib` type:
 
 ```cpp
-#include "core/base.h"
-#include "core/base_arena.h"
-#include "base/base_print.h"
+#include "base/base_mod.h"
 #include "lib/webgpu.h"
 #include "lib/webgpu_print.h"
 
@@ -145,16 +134,13 @@ The formatter uses signed `int` lengths, so output must be smaller than
 
 The printing functions live in `base/base_print.h`. It includes only its formatter implementation. The WebGPU overloads live in
 `lib/webgpu_print.h`. No application implementation macro is needed.
-Core string types remain in `core/base.h`. `<stdarg.h>` and `<stddef.h>`
+Core string types remain in `base/base.h`. `<stdarg.h>` and `<stddef.h>`
 come from Clang without linking libc, WASI, or Emscripten. The formatter's
 source and license
-are in `src/main/native/third_party/stb_sprintf.h`, adapted from the RAD
+are in `src/main/native/lib/stb_sprintf.h`, adapted from the RAD
 Debugger checkout with its debugger-specific conversions removed and `%S`
 changed to the core `String` type. RAD Debugger's license is retained in
 `LICENSES/raddebugger.txt`.
-
-`./tests/run.sh` also verifies formatting, memory reuse, and that printing
-imports only `env.print`, in both debug and optimized release builds.
 
 ## Learning resources used
 

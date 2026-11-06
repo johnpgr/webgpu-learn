@@ -1,8 +1,6 @@
 // Adapted from RAD Debugger, Copyright (c) Epic Games Tools.
 #pragma once
 
-#include "base.h"
-
 constexpr usz ARENA_HEADER_SIZE = 128;
 
 // Blocks remain owned by their arena for the module's lifetime. Wasm cannot
