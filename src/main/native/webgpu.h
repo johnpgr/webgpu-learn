@@ -454,6 +454,7 @@ struct WGPUColor {
     double b;
     double a;
 };
+
 static_assert(sizeof(WGPUColor) == 32);
 static_assert(__builtin_offsetof(WGPUColor, r) == 0);
 static_assert(__builtin_offsetof(WGPUColor, g) == 8);
@@ -465,6 +466,7 @@ struct WGPUOrigin3D {
     uint y;
     uint z;
 };
+
 static_assert(sizeof(WGPUOrigin3D) == 12);
 static_assert(__builtin_offsetof(WGPUOrigin3D, x) == 0);
 static_assert(__builtin_offsetof(WGPUOrigin3D, y) == 4);
@@ -475,6 +477,7 @@ struct WGPUExtent3D {
     uint height = 1;
     uint depthOrArrayLayers = 1;
 };
+
 static_assert(sizeof(WGPUExtent3D) == 12);
 static_assert(__builtin_offsetof(WGPUExtent3D, width) == 0);
 static_assert(__builtin_offsetof(WGPUExtent3D, height) == 4);
@@ -492,6 +495,7 @@ struct WGPUSurfaceConfiguration {
     uint height;
     WGPUPresentMode presentMode = WGPUPresentMode_Fifo;
 };
+
 static_assert(sizeof(WGPUSurfaceConfiguration) == 40);
 static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, device) == 4);
@@ -509,6 +513,7 @@ struct WGPUSurfaceTexture {
     WGPUTexture texture;
     WGPUSurfaceGetCurrentTextureStatus status;
 };
+
 static_assert(sizeof(WGPUSurfaceTexture) == 12);
 static_assert(__builtin_offsetof(WGPUSurfaceTexture, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUSurfaceTexture, texture) == 4);
@@ -522,6 +527,7 @@ struct WGPUBufferDescriptor {
     WGPUBool mappedAtCreation;
     uint _pad0;
 };
+
 static_assert(sizeof(WGPUBufferDescriptor) == 32);
 static_assert(__builtin_offsetof(WGPUBufferDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUBufferDescriptor, label) == 4);
@@ -541,6 +547,7 @@ struct WGPUTextureDescriptor {
     usz viewFormatCount;
     const WGPUTextureFormat* viewFormats;
 };
+
 static_assert(sizeof(WGPUTextureDescriptor) == 52);
 static_assert(__builtin_offsetof(WGPUTextureDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUTextureDescriptor, label) == 4);
@@ -565,6 +572,7 @@ struct WGPUTextureViewDescriptor {
     WGPUTextureAspect aspect = WGPUTextureAspect_All;
     WGPUTextureUsage usage;
 };
+
 static_assert(sizeof(WGPUTextureViewDescriptor) == 44);
 static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, label) == 4);
@@ -592,6 +600,7 @@ struct WGPUSamplerDescriptor {
     ushort maxAnisotropy = 1;
     ushort _pad0;
 };
+
 static_assert(sizeof(WGPUSamplerDescriptor) == 52);
 static_assert(__builtin_offsetof(WGPUSamplerDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUSamplerDescriptor, label) == 4);
@@ -613,6 +622,7 @@ struct WGPUShaderModuleDescriptor {
     WGPUStringView label;
     WGPUStringView code;
 };
+
 static_assert(sizeof(WGPUShaderModuleDescriptor) == 20);
 static_assert(__builtin_offsetof(WGPUShaderModuleDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUShaderModuleDescriptor, label) == 4);
@@ -625,6 +635,7 @@ struct WGPUBufferBindingLayout {
     uint _pad0;
     ulong minBindingSize;
 };
+
 static_assert(sizeof(WGPUBufferBindingLayout) == 24);
 static_assert(__builtin_offsetof(WGPUBufferBindingLayout, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUBufferBindingLayout, type) == 4);
@@ -635,6 +646,7 @@ struct WGPUSamplerBindingLayout {
     const WGPUChainedStruct* nextInChain;
     WGPUSamplerBindingType type;
 };
+
 static_assert(sizeof(WGPUSamplerBindingLayout) == 8);
 static_assert(__builtin_offsetof(WGPUSamplerBindingLayout, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUSamplerBindingLayout, type) == 4);
@@ -645,6 +657,7 @@ struct WGPUTextureBindingLayout {
     WGPUTextureViewDimension viewDimension;
     WGPUBool multisampled;
 };
+
 static_assert(sizeof(WGPUTextureBindingLayout) == 16);
 static_assert(__builtin_offsetof(WGPUTextureBindingLayout, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUTextureBindingLayout, sampleType) == 4);
@@ -657,6 +670,7 @@ struct WGPUStorageTextureBindingLayout {
     WGPUTextureFormat format;
     WGPUTextureViewDimension viewDimension;
 };
+
 static_assert(sizeof(WGPUStorageTextureBindingLayout) == 16);
 static_assert(__builtin_offsetof(WGPUStorageTextureBindingLayout, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUStorageTextureBindingLayout, access) == 4);
@@ -673,6 +687,7 @@ struct WGPUBindGroupLayoutEntry {
     WGPUTextureBindingLayout texture;
     WGPUStorageTextureBindingLayout storageTexture;
 };
+
 static_assert(sizeof(WGPUBindGroupLayoutEntry) == 80);
 static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, binding) == 4);
@@ -688,6 +703,7 @@ struct WGPUBindGroupLayoutDescriptor {
     usz entryCount;
     const WGPUBindGroupLayoutEntry* entries;
 };
+
 static_assert(sizeof(WGPUBindGroupLayoutDescriptor) == 20);
 static_assert(__builtin_offsetof(WGPUBindGroupLayoutDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUBindGroupLayoutDescriptor, label) == 4);
@@ -704,6 +720,7 @@ struct WGPUBindGroupEntry {
     WGPUSampler sampler;
     WGPUTextureView textureView;
 };
+
 static_assert(sizeof(WGPUBindGroupEntry) == 40);
 static_assert(__builtin_offsetof(WGPUBindGroupEntry, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUBindGroupEntry, binding) == 4);
@@ -720,6 +737,7 @@ struct WGPUBindGroupDescriptor {
     usz entryCount;
     const WGPUBindGroupEntry* entries;
 };
+
 static_assert(sizeof(WGPUBindGroupDescriptor) == 24);
 static_assert(__builtin_offsetof(WGPUBindGroupDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUBindGroupDescriptor, label) == 4);
@@ -733,6 +751,7 @@ struct WGPUPipelineLayoutDescriptor {
     usz bindGroupLayoutCount;
     const WGPUBindGroupLayout* bindGroupLayouts;
 };
+
 static_assert(sizeof(WGPUPipelineLayoutDescriptor) == 20);
 static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, label) == 4);
@@ -746,6 +765,7 @@ struct WGPUVertexAttribute {
     uint shaderLocation;
     uint _pad0;
 };
+
 static_assert(sizeof(WGPUVertexAttribute) == 24);
 static_assert(__builtin_offsetof(WGPUVertexAttribute, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUVertexAttribute, format) == 4);
@@ -759,6 +779,7 @@ struct WGPUVertexBufferLayout {
     usz attributeCount;
     const WGPUVertexAttribute* attributes;
 };
+
 static_assert(sizeof(WGPUVertexBufferLayout) == 24);
 static_assert(__builtin_offsetof(WGPUVertexBufferLayout, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUVertexBufferLayout, stepMode) == 4);
@@ -785,6 +806,7 @@ struct WGPUVertexState {
     usz bufferCount;
     const WGPUVertexBufferLayout* buffers;
 };
+
 static_assert(sizeof(WGPUVertexState) == 32);
 static_assert(__builtin_offsetof(WGPUVertexState, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUVertexState, module) == 4);
@@ -802,6 +824,7 @@ struct WGPUPrimitiveState {
     WGPUCullMode cullMode = WGPUCullMode_None;
     WGPUBool unclippedDepth = WGPU_FALSE;
 };
+
 static_assert(sizeof(WGPUPrimitiveState) == 24);
 static_assert(__builtin_offsetof(WGPUPrimitiveState, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUPrimitiveState, topology) == 4);
@@ -816,6 +839,7 @@ struct WGPUStencilFaceState {
     WGPUStencilOperation depthFailOp = WGPUStencilOperation_Keep;
     WGPUStencilOperation passOp = WGPUStencilOperation_Keep;
 };
+
 static_assert(sizeof(WGPUStencilFaceState) == 16);
 static_assert(__builtin_offsetof(WGPUStencilFaceState, compare) == 0);
 static_assert(__builtin_offsetof(WGPUStencilFaceState, failOp) == 4);
@@ -835,6 +859,7 @@ struct WGPUDepthStencilState {
     float depthBiasSlopeScale = 0.0f;
     float depthBiasClamp = 0.0f;
 };
+
 static_assert(sizeof(WGPUDepthStencilState) == 68);
 static_assert(__builtin_offsetof(WGPUDepthStencilState, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUDepthStencilState, format) == 4);
@@ -865,6 +890,7 @@ struct WGPUBlendComponent {
     WGPUBlendFactor srcFactor = WGPUBlendFactor_One;
     WGPUBlendFactor dstFactor = WGPUBlendFactor_Zero;
 };
+
 static_assert(sizeof(WGPUBlendComponent) == 12);
 static_assert(__builtin_offsetof(WGPUBlendComponent, operation) == 0);
 static_assert(__builtin_offsetof(WGPUBlendComponent, srcFactor) == 4);
@@ -874,6 +900,7 @@ struct WGPUBlendState {
     WGPUBlendComponent color;
     WGPUBlendComponent alpha;
 };
+
 static_assert(sizeof(WGPUBlendState) == 24);
 static_assert(__builtin_offsetof(WGPUBlendState, color) == 0);
 static_assert(__builtin_offsetof(WGPUBlendState, alpha) == 12);
@@ -884,6 +911,7 @@ struct WGPUColorTargetState {
     const WGPUBlendState* blend;
     WGPUColorWriteMask writeMask = WGPUColorWriteMask_All;
 };
+
 static_assert(sizeof(WGPUColorTargetState) == 16);
 static_assert(__builtin_offsetof(WGPUColorTargetState, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUColorTargetState, format) == 4);
@@ -899,6 +927,7 @@ struct WGPUFragmentState {
     usz targetCount;
     const WGPUColorTargetState* targets;
 };
+
 static_assert(sizeof(WGPUFragmentState) == 32);
 static_assert(__builtin_offsetof(WGPUFragmentState, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUFragmentState, module) == 4);
@@ -918,6 +947,7 @@ struct WGPURenderPipelineDescriptor {
     WGPUMultisampleState multisample;
     const WGPUFragmentState* fragment;
 };
+
 static_assert(sizeof(WGPURenderPipelineDescriptor) == 96);
 static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, label) == 4);
@@ -935,6 +965,7 @@ struct WGPUProgrammableStageDescriptor {
     usz constantCount;
     const WGPUConstantEntry* constants;
 };
+
 static_assert(sizeof(WGPUProgrammableStageDescriptor) == 24);
 static_assert(__builtin_offsetof(WGPUProgrammableStageDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUProgrammableStageDescriptor, module) == 4);
@@ -948,6 +979,7 @@ struct WGPUComputePipelineDescriptor {
     WGPUPipelineLayout layout; // {0} means "auto"
     WGPUProgrammableStageDescriptor compute;
 };
+
 static_assert(sizeof(WGPUComputePipelineDescriptor) == 40);
 static_assert(__builtin_offsetof(WGPUComputePipelineDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUComputePipelineDescriptor, label) == 4);
@@ -958,6 +990,7 @@ struct WGPUCommandEncoderDescriptor {
     const WGPUChainedStruct* nextInChain;
     WGPUStringView label;
 };
+
 static_assert(sizeof(WGPUCommandEncoderDescriptor) == 12);
 static_assert(__builtin_offsetof(WGPUCommandEncoderDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUCommandEncoderDescriptor, label) == 4);
@@ -966,6 +999,7 @@ struct WGPUCommandBufferDescriptor {
     const WGPUChainedStruct* nextInChain;
     WGPUStringView label;
 };
+
 static_assert(sizeof(WGPUCommandBufferDescriptor) == 12);
 static_assert(__builtin_offsetof(WGPUCommandBufferDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUCommandBufferDescriptor, label) == 4);
@@ -979,6 +1013,7 @@ struct WGPURenderPassColorAttachment {
     WGPUStoreOp storeOp;
     WGPUColor clearValue;
 };
+
 static_assert(sizeof(WGPURenderPassColorAttachment) == 56);
 static_assert(__builtin_offsetof(WGPURenderPassColorAttachment, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPURenderPassColorAttachment, view) == 4);
@@ -1000,6 +1035,7 @@ struct WGPURenderPassDepthStencilAttachment {
     uint stencilClearValue;
     WGPUBool stencilReadOnly;
 };
+
 static_assert(sizeof(WGPURenderPassDepthStencilAttachment) == 40);
 static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPURenderPassDepthStencilAttachment, view) == 4);
@@ -1019,6 +1055,7 @@ struct WGPURenderPassDescriptor {
     const WGPURenderPassColorAttachment* colorAttachments;
     const WGPURenderPassDepthStencilAttachment* depthStencilAttachment;
 };
+
 static_assert(sizeof(WGPURenderPassDescriptor) == 24);
 static_assert(__builtin_offsetof(WGPURenderPassDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPURenderPassDescriptor, label) == 4);
@@ -1030,6 +1067,7 @@ struct WGPUComputePassDescriptor {
     const WGPUChainedStruct* nextInChain;
     WGPUStringView label;
 };
+
 static_assert(sizeof(WGPUComputePassDescriptor) == 12);
 static_assert(__builtin_offsetof(WGPUComputePassDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUComputePassDescriptor, label) == 4);
@@ -1039,6 +1077,7 @@ struct WGPUTexelCopyBufferLayout {
     uint bytesPerRow;
     uint rowsPerImage;
 };
+
 static_assert(sizeof(WGPUTexelCopyBufferLayout) == 16);
 static_assert(__builtin_offsetof(WGPUTexelCopyBufferLayout, offset) == 0);
 static_assert(__builtin_offsetof(WGPUTexelCopyBufferLayout, bytesPerRow) == 8);
@@ -1049,6 +1088,7 @@ struct WGPUTexelCopyBufferInfo {
     WGPUBuffer buffer;
     uint _pad0;
 };
+
 static_assert(sizeof(WGPUTexelCopyBufferInfo) == 24);
 static_assert(__builtin_offsetof(WGPUTexelCopyBufferInfo, layout) == 0);
 static_assert(__builtin_offsetof(WGPUTexelCopyBufferInfo, buffer) == 16);
@@ -1059,6 +1099,7 @@ struct WGPUTexelCopyTextureInfo {
     WGPUOrigin3D origin;
     WGPUTextureAspect aspect = WGPUTextureAspect_All;
 };
+
 static_assert(sizeof(WGPUTexelCopyTextureInfo) == 24);
 static_assert(__builtin_offsetof(WGPUTexelCopyTextureInfo, texture) == 0);
 static_assert(__builtin_offsetof(WGPUTexelCopyTextureInfo, mipLevel) == 4);
@@ -1074,20 +1115,25 @@ GPU(wgpuSurfaceConfigure) void wgpuSurfaceConfigure(
     WGPUSurface surface,
     const WGPUSurfaceConfiguration* config
 );
+
 GPU(wgpuSurfaceUnconfigure) void wgpuSurfaceUnconfigure(
     WGPUSurface surface
 );
+
 GPU(wgpuSurfaceGetCurrentTexture) void wgpuSurfaceGetCurrentTexture(
     WGPUSurface surface,
     WGPUSurfaceTexture* surfaceTexture
 );
+
 GPU(wgpuSurfaceGetPreferredFormat) WGPUTextureFormat wgpuSurfaceGetPreferredFormat(
     WGPUSurface surface,
     WGPUAdapter adapter = {}
 );
+
 GPU(wgpuSurfacePresent) void wgpuSurfacePresent(
     WGPUSurface surface
 );
+
 GPU(wgpuSurfaceRelease) void wgpuSurfaceRelease(
     WGPUSurface surface
 );
@@ -1101,49 +1147,61 @@ GPU(wgpuAdapterRelease) void wgpuAdapterRelease(
 GPU(wgpuDeviceGetQueue) WGPUQueue wgpuDeviceGetQueue(
     WGPUDevice device
 );
+
 GPU(wgpuDeviceCreateBuffer) WGPUBuffer wgpuDeviceCreateBuffer(
     WGPUDevice device,
     const WGPUBufferDescriptor* descriptor
 );
+
 GPU(wgpuDeviceCreateTexture) WGPUTexture wgpuDeviceCreateTexture(
     WGPUDevice device,
     const WGPUTextureDescriptor* descriptor
 );
+
 GPU(wgpuDeviceCreateSampler) WGPUSampler wgpuDeviceCreateSampler(
     WGPUDevice device,
     const WGPUSamplerDescriptor* descriptor = nullptr
 );
+
 GPU(wgpuDeviceCreateBindGroupLayout) WGPUBindGroupLayout wgpuDeviceCreateBindGroupLayout(
     WGPUDevice device,
     const WGPUBindGroupLayoutDescriptor* descriptor
 );
+
 GPU(wgpuDeviceCreatePipelineLayout) WGPUPipelineLayout wgpuDeviceCreatePipelineLayout(
     WGPUDevice device,
     const WGPUPipelineLayoutDescriptor* descriptor
 );
+
 GPU(wgpuDeviceCreateBindGroup) WGPUBindGroup wgpuDeviceCreateBindGroup(
     WGPUDevice device,
     const WGPUBindGroupDescriptor* descriptor
 );
+
 GPU(wgpuDeviceCreateShaderModule) WGPUShaderModule wgpuDeviceCreateShaderModule(
     WGPUDevice device,
     const WGPUShaderModuleDescriptor* descriptor
 );
+
 GPU(wgpuDeviceCreateRenderPipeline) WGPURenderPipeline wgpuDeviceCreateRenderPipeline(
     WGPUDevice device,
     const WGPURenderPipelineDescriptor* descriptor
 );
+
 GPU(wgpuDeviceCreateComputePipeline) WGPUComputePipeline wgpuDeviceCreateComputePipeline(
     WGPUDevice device,
     const WGPUComputePipelineDescriptor* descriptor
 );
+
 GPU(wgpuDeviceCreateCommandEncoder) WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(
     WGPUDevice device,
     const WGPUCommandEncoderDescriptor* descriptor = nullptr
 );
+
 GPU(wgpuDeviceDestroy) void wgpuDeviceDestroy(
     WGPUDevice device
 );
+
 GPU(wgpuDeviceRelease) void wgpuDeviceRelease(
     WGPUDevice device
 );
@@ -1152,6 +1210,7 @@ GPU(wgpuDeviceRelease) void wgpuDeviceRelease(
 GPU(wgpuBufferDestroy) void wgpuBufferDestroy(
     WGPUBuffer buffer
 );
+
 GPU(wgpuBufferRelease) void wgpuBufferRelease(
     WGPUBuffer buffer
 );
@@ -1161,9 +1220,11 @@ GPU(wgpuTextureCreateView) WGPUTextureView wgpuTextureCreateView(
     WGPUTexture texture,
     const WGPUTextureViewDescriptor* descriptor = nullptr
 );
+
 GPU(wgpuTextureDestroy) void wgpuTextureDestroy(
     WGPUTexture texture
 );
+
 GPU(wgpuTextureRelease) void wgpuTextureRelease(
     WGPUTexture texture
 );
@@ -1177,15 +1238,19 @@ GPU(wgpuTextureViewRelease) void wgpuTextureViewRelease(
 GPU(wgpuSamplerRelease) void wgpuSamplerRelease(
     WGPUSampler sampler
 );
+
 GPU(wgpuBindGroupLayoutRelease) void wgpuBindGroupLayoutRelease(
     WGPUBindGroupLayout bindGroupLayout
 );
+
 GPU(wgpuBindGroupRelease) void wgpuBindGroupRelease(
     WGPUBindGroup bindGroup
 );
+
 GPU(wgpuPipelineLayoutRelease) void wgpuPipelineLayoutRelease(
     WGPUPipelineLayout pipelineLayout
 );
+
 GPU(wgpuShaderModuleRelease) void wgpuShaderModuleRelease(
     WGPUShaderModule shaderModule
 );
@@ -1195,13 +1260,16 @@ GPU(wgpuRenderPipelineGetBindGroupLayout) WGPUBindGroupLayout wgpuRenderPipeline
     WGPURenderPipeline pipeline,
     uint groupIndex
 );
+
 GPU(wgpuRenderPipelineRelease) void wgpuRenderPipelineRelease(
     WGPURenderPipeline renderPipeline
 );
+
 GPU(wgpuComputePipelineGetBindGroupLayout) WGPUBindGroupLayout wgpuComputePipelineGetBindGroupLayout(
     WGPUComputePipeline pipeline,
     uint groupIndex
 );
+
 GPU(wgpuComputePipelineRelease) void wgpuComputePipelineRelease(
     WGPUComputePipeline computePipeline
 );
@@ -1211,10 +1279,12 @@ GPU(wgpuCommandEncoderBeginRenderPass) WGPURenderPassEncoder wgpuCommandEncoderB
     WGPUCommandEncoder commandEncoder,
     const WGPURenderPassDescriptor* descriptor
 );
+
 GPU(wgpuCommandEncoderBeginComputePass) WGPUComputePassEncoder wgpuCommandEncoderBeginComputePass(
     WGPUCommandEncoder commandEncoder,
     const WGPUComputePassDescriptor* descriptor = nullptr
 );
+
 GPU(wgpuCommandEncoderCopyBufferToBuffer) void wgpuCommandEncoderCopyBufferToBuffer(
     WGPUCommandEncoder commandEncoder,
     WGPUBuffer source,
@@ -1223,34 +1293,40 @@ GPU(wgpuCommandEncoderCopyBufferToBuffer) void wgpuCommandEncoderCopyBufferToBuf
     ulong destinationOffset,
     ulong size
 );
+
 GPU(wgpuCommandEncoderCopyBufferToTexture) void wgpuCommandEncoderCopyBufferToTexture(
     WGPUCommandEncoder commandEncoder,
     const WGPUTexelCopyBufferInfo* source,
     const WGPUTexelCopyTextureInfo* destination,
     const WGPUExtent3D* copySize
 );
+
 GPU(wgpuCommandEncoderCopyTextureToBuffer) void wgpuCommandEncoderCopyTextureToBuffer(
     WGPUCommandEncoder commandEncoder,
     const WGPUTexelCopyTextureInfo* source,
     const WGPUTexelCopyBufferInfo* destination,
     const WGPUExtent3D* copySize
 );
+
 GPU(wgpuCommandEncoderCopyTextureToTexture) void wgpuCommandEncoderCopyTextureToTexture(
     WGPUCommandEncoder commandEncoder,
     const WGPUTexelCopyTextureInfo* source,
     const WGPUTexelCopyTextureInfo* destination,
     const WGPUExtent3D* copySize
 );
+
 GPU(wgpuCommandEncoderClearBuffer) void wgpuCommandEncoderClearBuffer(
     WGPUCommandEncoder commandEncoder,
     WGPUBuffer buffer,
     ulong offset = 0,
     ulong size = WGPU_WHOLE_SIZE
 );
+
 GPU(wgpuCommandEncoderFinish) WGPUCommandBuffer wgpuCommandEncoderFinish(
     WGPUCommandEncoder commandEncoder,
     const WGPUCommandBufferDescriptor* descriptor = nullptr
 );
+
 GPU(wgpuCommandEncoderRelease) void wgpuCommandEncoderRelease(
     WGPUCommandEncoder commandEncoder
 );
@@ -1260,6 +1336,7 @@ GPU(wgpuRenderPassEncoderSetPipeline) void wgpuRenderPassEncoderSetPipeline(
     WGPURenderPassEncoder renderPassEncoder,
     WGPURenderPipeline pipeline
 );
+
 GPU(wgpuRenderPassEncoderSetBindGroup) void wgpuRenderPassEncoderSetBindGroup(
     WGPURenderPassEncoder renderPassEncoder,
     uint groupIndex,
@@ -1267,6 +1344,7 @@ GPU(wgpuRenderPassEncoderSetBindGroup) void wgpuRenderPassEncoderSetBindGroup(
     usz dynamicOffsetCount = 0,
     const uint* dynamicOffsets = nullptr
 );
+
 GPU(wgpuRenderPassEncoderSetVertexBuffer) void wgpuRenderPassEncoderSetVertexBuffer(
     WGPURenderPassEncoder renderPassEncoder,
     uint slot,
@@ -1274,6 +1352,7 @@ GPU(wgpuRenderPassEncoderSetVertexBuffer) void wgpuRenderPassEncoderSetVertexBuf
     ulong offset = 0,
     ulong size = WGPU_WHOLE_SIZE
 );
+
 GPU(wgpuRenderPassEncoderSetIndexBuffer) void wgpuRenderPassEncoderSetIndexBuffer(
     WGPURenderPassEncoder renderPassEncoder,
     WGPUBuffer buffer,
@@ -1281,6 +1360,7 @@ GPU(wgpuRenderPassEncoderSetIndexBuffer) void wgpuRenderPassEncoderSetIndexBuffe
     ulong offset = 0,
     ulong size = WGPU_WHOLE_SIZE
 );
+
 GPU(wgpuRenderPassEncoderSetViewport) void wgpuRenderPassEncoderSetViewport(
     WGPURenderPassEncoder renderPassEncoder,
     float x,
@@ -1290,6 +1370,7 @@ GPU(wgpuRenderPassEncoderSetViewport) void wgpuRenderPassEncoderSetViewport(
     float minDepth,
     float maxDepth
 );
+
 GPU(wgpuRenderPassEncoderSetScissorRect) void wgpuRenderPassEncoderSetScissorRect(
     WGPURenderPassEncoder renderPassEncoder,
     uint x,
@@ -1297,14 +1378,17 @@ GPU(wgpuRenderPassEncoderSetScissorRect) void wgpuRenderPassEncoderSetScissorRec
     uint width,
     uint height
 );
+
 GPU(wgpuRenderPassEncoderSetBlendConstant) void wgpuRenderPassEncoderSetBlendConstant(
     WGPURenderPassEncoder renderPassEncoder,
     const WGPUColor* color
 );
+
 GPU(wgpuRenderPassEncoderSetStencilReference) void wgpuRenderPassEncoderSetStencilReference(
     WGPURenderPassEncoder renderPassEncoder,
     uint reference
 );
+
 GPU(wgpuRenderPassEncoderDraw) void wgpuRenderPassEncoderDraw(
     WGPURenderPassEncoder renderPassEncoder,
     uint vertexCount,
@@ -1312,6 +1396,7 @@ GPU(wgpuRenderPassEncoderDraw) void wgpuRenderPassEncoderDraw(
     uint firstVertex = 0,
     uint firstInstance = 0
 );
+
 GPU(wgpuRenderPassEncoderDrawIndexed) void wgpuRenderPassEncoderDrawIndexed(
     WGPURenderPassEncoder renderPassEncoder,
     uint indexCount,
@@ -1320,9 +1405,11 @@ GPU(wgpuRenderPassEncoderDrawIndexed) void wgpuRenderPassEncoderDrawIndexed(
     int baseVertex = 0,
     uint firstInstance = 0
 );
+
 GPU(wgpuRenderPassEncoderEnd) void wgpuRenderPassEncoderEnd(
     WGPURenderPassEncoder renderPassEncoder
 );
+
 GPU(wgpuRenderPassEncoderRelease) void wgpuRenderPassEncoderRelease(
     WGPURenderPassEncoder renderPassEncoder
 );
@@ -1332,6 +1419,7 @@ GPU(wgpuComputePassEncoderSetPipeline) void wgpuComputePassEncoderSetPipeline(
     WGPUComputePassEncoder computePassEncoder,
     WGPUComputePipeline pipeline
 );
+
 GPU(wgpuComputePassEncoderSetBindGroup) void wgpuComputePassEncoderSetBindGroup(
     WGPUComputePassEncoder computePassEncoder,
     uint groupIndex,
@@ -1339,15 +1427,18 @@ GPU(wgpuComputePassEncoderSetBindGroup) void wgpuComputePassEncoderSetBindGroup(
     usz dynamicOffsetCount = 0,
     const uint* dynamicOffsets = nullptr
 );
+
 GPU(wgpuComputePassEncoderDispatchWorkgroups) void wgpuComputePassEncoderDispatchWorkgroups(
     WGPUComputePassEncoder computePassEncoder,
     uint workgroupCountX,
     uint workgroupCountY = 1,
     uint workgroupCountZ = 1
 );
+
 GPU(wgpuComputePassEncoderEnd) void wgpuComputePassEncoderEnd(
     WGPUComputePassEncoder computePassEncoder
 );
+
 GPU(wgpuComputePassEncoderRelease) void wgpuComputePassEncoderRelease(
     WGPUComputePassEncoder computePassEncoder
 );
@@ -1363,6 +1454,7 @@ GPU(wgpuQueueSubmit) void wgpuQueueSubmit(
     usz commandCount,
     const WGPUCommandBuffer* commands
 );
+
 GPU(wgpuQueueWriteBuffer) void wgpuQueueWriteBuffer(
     WGPUQueue queue,
     WGPUBuffer buffer,
@@ -1370,6 +1462,7 @@ GPU(wgpuQueueWriteBuffer) void wgpuQueueWriteBuffer(
     const void* data,
     usz size
 );
+
 GPU(wgpuQueueWriteTexture) void wgpuQueueWriteTexture(
     WGPUQueue queue,
     const WGPUTexelCopyTextureInfo* destination,
@@ -1378,6 +1471,7 @@ GPU(wgpuQueueWriteTexture) void wgpuQueueWriteTexture(
     const WGPUTexelCopyBufferLayout* dataLayout,
     const WGPUExtent3D* writeSize
 );
+
 GPU(wgpuQueueRelease) void wgpuQueueRelease(
     WGPUQueue queue
 );
