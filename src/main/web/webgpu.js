@@ -641,23 +641,22 @@ export function createWebGPUBindings({ getExports }) {
         if (scratchBase === 0) {
             scratchBase = getExports().wgpu_host_alloc(CALLBACK_SCRATCH_SIZE) >>> 0;
             if (scratchBase === 0) throw new RangeError("wgpu_host_alloc failed");
-            scratchTop = scratchBase;
         }
-        const p = (scratchTop + align - 1) & ~(align - 1);
+        const p = Math.ceil((scratchBase + scratchTop) / align) * align;
         if (p + size > scratchBase + CALLBACK_SCRATCH_SIZE) {
             throw new RangeError("WebGPU callback scratch space exhausted (callbacks nested too deeply)");
         }
-        scratchTop = p + size;
+        scratchTop = p + size - scratchBase;
         return p;
     }
 
     // Writes a WGPUStringView (and its bytes) to scratch; returns the view's address.
     function scratchStringView(text) {
         const sv = scratchAlloc(8, 4);
-        const data = scratchTop;
+        const data = scratchBase + scratchTop;
         const room = scratchBase + CALLBACK_SCRATCH_SIZE - data;
         const { written } = encoder.encodeInto(text ?? "", new Uint8Array(buffer(), data, room));
-        scratchTop = data + written;
+        scratchTop += written;
         const dv = view();
         dv.setUint32(sv, written > 0 ? data : 0, true);
         dv.setUint32(sv + 4, written, true);
@@ -673,7 +672,7 @@ export function createWebGPUBindings({ getExports }) {
             const fn = getExports().__indirect_function_table.get(fnPtr >>> 0);
             fn(...makeArgs());
         } finally {
-            if (scratchBase !== 0) scratchTop = mark;
+            scratchTop = mark;
         }
     }
 

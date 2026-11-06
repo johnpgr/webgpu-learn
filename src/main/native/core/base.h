@@ -65,132 +65,33 @@ extern "C" char __heap_base;
 
 inline void* operator new(usz, void* p) noexcept { return p; }
 
+// One allocator owns the linear-memory tail, including host bridge allocations.
 inline char* os_reserve(usz size) {
-    static usz brk = 0;
-    if (brk == 0) brk = (usz)&__heap_base;
+    static ulong end_of_allocations = (uptr)&__heap_base;
+    ulong start = (end_of_allocations + 15) & ~15ull;
+    ulong end = start + size;
+    if (size == 0 || end > (1ull << 32)) TRAP();
 
-    usz start = (brk + 15) & ~(usz)15; //align to 16-byte on every block
-    usz end = start + size;
-    if (end < start) {
-        ASSERT(!"Arena allocation fail: overflow");
-        return nullptr;
+    ulong available_pages = WASM_MEMORY_SIZE();
+    ulong required_pages = (end + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
+    if (required_pages > available_pages) {
+        if (WASM_MEMORY_GROW((usz)(required_pages - available_pages)) == (usz)-1) TRAP();
     }
-
-    usz have = WASM_MEMORY_SIZE() * WASM_PAGE_SIZE;
-    if (end > have) {
-        usz pages = (end - have + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
-        if (WASM_MEMORY_GROW(pages) == (usz)-1) {
-            ASSERT(!"Arena allocation fail: can't grow the arena");
-            return nullptr;
-        }
-    }
-    brk = end;
-
-    return (char*)start;
+    end_of_allocations = end;
+    return (char*)(uptr)start;
 }
 
-ENV(print) void print(const char* str, usz len);
+using ZString = const char*;
 
-template <usz N>
-static inline void print(const char (&s)[N]) { print(s, N - 1); }
-
-struct Arena {
-    char* base;
-    usz cap;
-    usz pos;
-    usz peak;
+struct String {
+    const char* data;
+    usz len;
 };
 
-inline Arena make_arena(usz cap) {
-    Arena a = {};
-
-    a.base = os_reserve(cap);
-    a.cap = a.base ? cap : 0;
-
-    return a;
-}
-
-inline Arena arena_sub(Arena* parent, usz cap);
-
-inline void* arena_push_nz(Arena* a, usz size, usz align = 16) {
-    ASSERT(align && (align & (align - 1)) == 0); // power of two
-    usz p = (a->pos + (align - 1)) & ~(align - 1);
-    if (p + size > a->cap || p + size < p) {
-        TRAP(); // out of budget
+inline String string_from_zstring(ZString text) {
+    usz length = 0;
+    if (text) {
+        while (text[length] != '\0') ++length;
     }
-
-    a->pos = p + size;
-    if (a->pos > a->peak) a->peak = a->pos;
-
-    return a->base + p;
+    return {text, length};
 }
-
-inline void* arena_push_zero(Arena* a, usz size, usz align = 16) {
-    void* p = arena_push_nz(a, size, align);
-    MEMSET(p, 0, size);
-
-    return p;
-}
-
-inline Arena arena_sub(Arena* parent, usz cap) {
-    Arena a = {};
-
-    a.base = (char*)arena_push_nz(parent, cap, 16);
-    a.cap = cap;
-
-    return a;
-}
-
-inline void arena_reset(Arena* a) {
-#ifdef DEBUG
-    MEMSET(a->base, 0xCD, a->pos); // poison: catches use-after-reset
-#endif
-    a->pos = 0;
-}
-
-template <typename T>
-inline T* push_struct(Arena* a) {
-    return (T*)arena_push_zero(a, sizeof(T), alignof(T));
-}
-
-template <typename T>
-inline T* push_array(Arena* a, usz n) {
-    return (T*)arena_push_zero(a, sizeof(T) * n, alignof(T));
-}
-
-template <typename T>
-inline T* push_array_nz(Arena* a, usz n) {
-    return (T*)arena_push_nz(a, sizeof(T) * n, alignof(T));
-}
-
-// For the rare type that needs a constructor.
-template <typename T> inline T* push_new(Arena* a) {
-    return new (arena_push_nz(a, sizeof(T), alignof(T))) T();
-}
-
-struct Arena_Mark {
-    Arena* arena;
-    usz pos;
-};
-
-inline Arena_Mark arena_mark(Arena* a) {
-    return { a, a->pos };
-}
-
-inline void arena_pop_to(Arena_Mark m) {
-    ASSERT(m.pos <= m.arena->pos); // marks must be popped in LIFO order
-#ifdef DEBUG
-    MEMSET(m.arena->base + m.pos, 0xCD, m.arena->pos - m.pos);
-#endif
-    m.arena->pos = m.pos;
-}
-
-// Optional scope guard: pops automatically at end of scope.
-struct Temp_Scope {
-    Arena_Mark mark;
-
-    explicit Temp_Scope(Arena* a) : mark(arena_mark(a)) {}
-    ~Temp_Scope() { arena_pop_to(mark); }
-    Temp_Scope(const Temp_Scope&) = delete;
-    Temp_Scope& operator=(const Temp_Scope&) = delete;
-};

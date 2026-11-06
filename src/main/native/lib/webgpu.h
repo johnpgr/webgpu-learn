@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/base.h"
+#include "../core/base.h"
 
 // ============================================================================
 // webgpu.h C/C++ Binding Layer for Wasm32

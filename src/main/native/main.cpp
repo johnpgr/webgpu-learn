@@ -1,21 +1,21 @@
 #include "core/base.h"
-#include "webgpu.h"
+#include "core/base_arena.h"
+#include "base/base_print.h"
+#include "lib/webgpu.h"
+#include "lib/webgpu_print.h"
 
-static Arena persistent_storage;
-static Arena transient_storage;
+static Arena* storage;
 
 static WGPUInstance instance;
 
 EXPORT(init) void init() {
-    persistent_storage = make_arena(MB(64));
-    transient_storage = make_arena(MB(8));
+    storage = arena_alloc(MB(64));
 
-    WGPUInstanceDescriptor desc = { .nextInChain = nullptr };
+    WGPUInstanceDescriptor desc = {};
+     desc.nextInChain = nullptr;
     instance = wgpuCreateInstance(&desc);
 
-    print("Hello, World!");
+    printf("Hello, World! WebGPU instance=%u", instance.id);
 }
 
-EXPORT(frame) void frame(float) {
-    arena_reset(&transient_storage);
-}
+EXPORT(frame) void frame(float) { }
