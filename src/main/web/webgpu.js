@@ -4,13 +4,28 @@
 
 const WHOLE_SIZE = 0xffffffffffffffffn;
 const UINT32_UNDEFINED = 0xffffffff;
+// Also 0xffffffff; WGPU_COPY_STRIDE_UNDEFINED in webgpu.h.
+const COPY_STRIDE_UNDEFINED = 0xffffffff;
 const STRLEN = 0xffffffff;
-const STYPE_SHADER_SOURCE_WGSL = 1;
+const STYPE_SHADER_SOURCE_WGSL = 2;
+const BINDING_NOT_USED = 0; // *BindingType value 0; value 1 is Undefined (= default)
+const COMPOSITE_ALPHA_UNPREMULTIPLIED = 3;
+const COMPOSITE_ALPHA_INHERIT = 4;
+const OPTIONAL_BOOL_FALSE = 0;
+const OPTIONAL_BOOL_TRUE = 1;
+const OPTIONAL_BOOL_UNDEFINED = 2;
 const SURFACE_STATUS_SUCCESS_OPTIMAL = 1;
 const SURFACE_STATUS_ERROR = 6;
 
+// Enum lookup tables, indexed by the WGPU* enum value (values identical to
+// webgpu-headers). `undefined` = Undefined/unset; `null` = the Undefined value of the
+// *BindingType enums (1), which also means "use the WebGPU default".
+// Generated from webgpu.h `main`; keep in sync with the enums in webgpu.h.
+
+// WGPUCompositeAlphaMode: Auto, Opaque, Premultiplied. Unpremultiplied (3) and
+// Inherit (4) are rejected in wgpuSurfaceConfigure: browser canvases cannot do them.
 const COMPOSITE_ALPHA_MODES = [
-    "opaque", // Auto -> opaque in browser canvas configuration
+    undefined,
     "opaque",
     "premultiplied",
 ];
@@ -21,6 +36,8 @@ const TEXTURE_FORMATS = [
     "r8snorm",
     "r8uint",
     "r8sint",
+    "r16unorm",
+    "r16snorm",
     "r16uint",
     "r16sint",
     "r16float",
@@ -31,6 +48,8 @@ const TEXTURE_FORMATS = [
     "r32float",
     "r32uint",
     "r32sint",
+    "rg16unorm",
+    "rg16snorm",
     "rg16uint",
     "rg16sint",
     "rg16float",
@@ -48,6 +67,8 @@ const TEXTURE_FORMATS = [
     "rg32float",
     "rg32uint",
     "rg32sint",
+    "rgba16unorm",
+    "rgba16snorm",
     "rgba16uint",
     "rgba16sint",
     "rgba16float",
@@ -60,11 +81,59 @@ const TEXTURE_FORMATS = [
     "depth24plus-stencil8",
     "depth32float",
     "depth32float-stencil8",
+    "bc1-rgba-unorm",
+    "bc1-rgba-unorm-srgb",
+    "bc2-rgba-unorm",
+    "bc2-rgba-unorm-srgb",
+    "bc3-rgba-unorm",
+    "bc3-rgba-unorm-srgb",
+    "bc4-r-unorm",
+    "bc4-r-snorm",
+    "bc5-rg-unorm",
+    "bc5-rg-snorm",
+    "bc6h-rgb-ufloat",
+    "bc6h-rgb-float",
+    "bc7-rgba-unorm",
+    "bc7-rgba-unorm-srgb",
+    "etc2-rgb8unorm",
+    "etc2-rgb8unorm-srgb",
+    "etc2-rgb8a1unorm",
+    "etc2-rgb8a1unorm-srgb",
+    "etc2-rgba8unorm",
+    "etc2-rgba8unorm-srgb",
+    "eac-r11unorm",
+    "eac-r11snorm",
+    "eac-rg11unorm",
+    "eac-rg11snorm",
+    "astc-4x4-unorm",
+    "astc-4x4-unorm-srgb",
+    "astc-5x4-unorm",
+    "astc-5x4-unorm-srgb",
+    "astc-5x5-unorm",
+    "astc-5x5-unorm-srgb",
+    "astc-6x5-unorm",
+    "astc-6x5-unorm-srgb",
+    "astc-6x6-unorm",
+    "astc-6x6-unorm-srgb",
+    "astc-8x5-unorm",
+    "astc-8x5-unorm-srgb",
+    "astc-8x6-unorm",
+    "astc-8x6-unorm-srgb",
+    "astc-8x8-unorm",
+    "astc-8x8-unorm-srgb",
+    "astc-10x5-unorm",
+    "astc-10x5-unorm-srgb",
+    "astc-10x6-unorm",
+    "astc-10x6-unorm-srgb",
+    "astc-10x8-unorm",
+    "astc-10x8-unorm-srgb",
+    "astc-10x10-unorm",
+    "astc-10x10-unorm-srgb",
+    "astc-12x10-unorm",
+    "astc-12x10-unorm-srgb",
+    "astc-12x12-unorm",
+    "astc-12x12-unorm-srgb",
 ];
-
-const TEXTURE_FORMAT_TO_ENUM = new Map(
-    TEXTURE_FORMATS.map((name, index) => [name, index]),
-);
 
 const TEXTURE_DIMENSIONS = [
     undefined,
@@ -92,8 +161,8 @@ const TEXTURE_ASPECTS = [
 
 const LOAD_OPS = [
     undefined,
-    "clear",
     "load",
+    "clear",
 ];
 
 const STORE_OPS = [
@@ -190,6 +259,59 @@ const VERTEX_STEP_MODES = [
     "instance",
 ];
 
+const ADDRESS_MODES = [
+    undefined,
+    "clamp-to-edge",
+    "repeat",
+    "mirror-repeat",
+];
+
+const FILTER_MODES = [
+    undefined,
+    "nearest",
+    "linear",
+];
+
+const MIPMAP_FILTER_MODES = [
+    undefined,
+    "nearest",
+    "linear",
+];
+
+const BUFFER_BINDING_TYPES = [
+    undefined,
+    null,
+    "uniform",
+    "storage",
+    "read-only-storage",
+];
+
+const SAMPLER_BINDING_TYPES = [
+    undefined,
+    null,
+    "filtering",
+    "non-filtering",
+    "comparison",
+];
+
+const TEXTURE_SAMPLE_TYPES = [
+    undefined,
+    null,
+    "float",
+    "unfilterable-float",
+    "depth",
+    "sint",
+    "uint",
+];
+
+const STORAGE_TEXTURE_ACCESS = [
+    undefined,
+    null,
+    "write-only",
+    "read-only",
+    "read-write",
+];
+
 const VERTEX_FORMATS = [
     undefined,
     "uint8",
@@ -233,63 +355,46 @@ const VERTEX_FORMATS = [
     "sint32x4",
     "unorm10-10-10-2",
     "unorm8x4-bgra",
+    "snorm10-10-10-2",
 ];
 
-const ADDRESS_MODES = [
-    undefined,
-    "clamp-to-edge",
-    "repeat",
-    "mirror-repeat",
-];
-
-const FILTER_MODES = [
-    undefined,
-    "nearest",
-    "linear",
-];
-
-const MIPMAP_FILTER_MODES = [
-    undefined,
-    "nearest",
-    "linear",
-];
-
-const BUFFER_BINDING_TYPES = [
-    undefined,
-    "uniform",
-    "storage",
-    "read-only-storage",
-];
-
-const SAMPLER_BINDING_TYPES = [
-    undefined,
-    "filtering",
-    "non-filtering",
-    "comparison",
-];
-
-const TEXTURE_SAMPLE_TYPES = [
-    undefined,
-    "float",
-    "unfilterable-float",
-    "depth",
-    "sint",
-    "uint",
-];
-
-const STORAGE_TEXTURE_ACCESS = [
-    undefined,
-    "write-only",
-    "read-only",
-    "read-write",
-];
+const TEXTURE_FORMAT_TO_ENUM = new Map(
+    TEXTURE_FORMATS.map((name, index) => [name, index]),
+);
 
 function decodeEnum(table, value, name) {
     const resolved = table[value >>> 0];
-    if (value !== 0 && resolved === undefined) {
+    if (resolved === null) {
+        return undefined;
+    }
+    if (resolved === undefined && value !== 0) {
         throw new RangeError(`Invalid ${name} enum value: ${value >>> 0}`);
     }
     return resolved;
+}
+
+// WGPUFlags is 64-bit; every WebGPU usage/mask flag set fits in 32 bits.
+function toFlags(bigIntValue, name) {
+    const value = BigInt.asUintN(64, bigIntValue);
+    if (value > 0xffffffffn) {
+        throw new RangeError(`${name} has bits above 32 set: 0x${value.toString(16)}`);
+    }
+    return Number(value);
+}
+
+function toOptionalBool(value, name) {
+    switch (value >>> 0) {
+        case OPTIONAL_BOOL_FALSE: return false;
+        case OPTIONAL_BOOL_TRUE: return true;
+        case OPTIONAL_BOOL_UNDEFINED: return undefined;
+        default: throw new RangeError(`Invalid ${name} WGPUOptionalBool value: ${value >>> 0}`);
+    }
+}
+
+function requireZero(value, what) {
+    if ((value >>> 0) !== 0) {
+        throw new TypeError(`${what} is not supported by this WebGPU binding (must be 0/null)`);
+    }
 }
 
 function requireEnum(table, value, name) {
@@ -317,10 +422,12 @@ function toOptionalSize64(bigIntValue, name) {
 }
 
 // Slot-based handle table with 12-bit generation counter and 20-bit slot index.
-// Handle 0 is reserved as the null sentinel.
+// Handle 0 is reserved as the null sentinel. Each slot is reference counted:
+// store() starts at 1, wgpu<Object>AddRef adds one, wgpu<Object>Release removes one
+// and frees the slot at zero.
 class HandleTable {
     constructor() {
-        this.slots = [{ value: null, generation: 0 }];
+        this.slots = [{ value: null, generation: 0, refs: 0 }];
         this.freeSlots = [];
     }
 
@@ -334,6 +441,7 @@ class HandleTable {
             index = this.freeSlots.pop();
             const slot = this.slots[index];
             slot.value = object;
+            slot.refs = 1;
             generation = slot.generation;
         } else {
             index = this.slots.length;
@@ -341,7 +449,7 @@ class HandleTable {
                 throw new RangeError("WebGPU handle table capacity exceeded");
             }
             generation = 1;
-            this.slots.push({ value: object, generation });
+            this.slots.push({ value: object, generation, refs: 1 });
         }
         return (((generation & 0xfff) << 20) | index) >>> 0;
     }
@@ -368,6 +476,18 @@ class HandleTable {
         return this.get(h, kind);
     }
 
+    addRef(handle) {
+        const h = handle >>> 0;
+        if (h === 0) {
+            throw new TypeError("Cannot AddRef a null WebGPU handle");
+        }
+        const slot = this.slots[h & 0xfffff];
+        if (!slot || slot.value === null || slot.generation !== ((h >>> 20) & 0xfff)) {
+            throw new TypeError(`AddRef on invalid or released WebGPU handle: 0x${h.toString(16)}`);
+        }
+        slot.refs++;
+    }
+
     release(handle) {
         const h = handle >>> 0;
         if (h === 0) {
@@ -378,6 +498,9 @@ class HandleTable {
         const slot = this.slots[index];
         if (!slot || slot.value === null || slot.generation !== generation) {
             throw new TypeError(`Double release or invalid WebGPU handle: 0x${h.toString(16)}`);
+        }
+        if (--slot.refs > 0) {
+            return;
         }
         slot.value = null;
         slot.generation = ((slot.generation + 1) & 0xfff) || 1;
@@ -393,6 +516,7 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
     const deviceHandle = handles.store(device);
     const surfaceHandle = handles.store(context);
     const preferredFormatEnum = TEXTURE_FORMAT_TO_ENUM.get(format) ?? 0;
+    let surfaceErrorLogged = false;
 
     // Always construct views from the live memory.buffer so wasm memory.grow
     // never leaves us reading from a detached ArrayBuffer.
@@ -437,13 +561,11 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
     }
 
     function readExtent3D(dv, offset) {
-        const width = dv.getUint32(offset, true);
-        const height = dv.getUint32(offset + 4, true);
-        const depthOrArrayLayers = dv.getUint32(offset + 8, true);
+        // Defaults (height/depthOrArrayLayers = 1) live in WGPUExtent3D on the C++ side.
         return {
-            width,
-            height: height === 0 ? 1 : height,
-            depthOrArrayLayers: depthOrArrayLayers === 0 ? 1 : depthOrArrayLayers,
+            width: dv.getUint32(offset, true),
+            height: dv.getUint32(offset + 4, true),
+            depthOrArrayLayers: dv.getUint32(offset + 8, true),
         };
     }
 
@@ -483,8 +605,8 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
         };
         const bytesPerRow = dv.getUint32(offset + 8, true);
         const rowsPerImage = dv.getUint32(offset + 12, true);
-        if (bytesPerRow !== 0 && bytesPerRow !== UINT32_UNDEFINED) layout.bytesPerRow = bytesPerRow;
-        if (rowsPerImage !== 0 && rowsPerImage !== UINT32_UNDEFINED) layout.rowsPerImage = rowsPerImage;
+        if (bytesPerRow !== COPY_STRIDE_UNDEFINED) layout.bytesPerRow = bytesPerRow;
+        if (rowsPerImage !== COPY_STRIDE_UNDEFINED) layout.rowsPerImage = rowsPerImage;
         return layout;
     }
 
@@ -544,6 +666,9 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
     const release = (handle) => {
         handles.release(handle);
     };
+    const addRef = (handle) => {
+        handles.addRef(handle);
+    };
 
     const imports = {
         // WGPUSurface
@@ -553,23 +678,23 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             const dv = view();
             const cfgDevice = handles.get(dv.getUint32(p + 4, true), "WGPUDevice");
             const cfgFormat = requireEnum(TEXTURE_FORMATS, dv.getUint32(p + 8, true), "WGPUTextureFormat");
-            const usage = dv.getUint32(p + 12, true);
-            const viewFormatCount = dv.getUint32(p + 16, true);
-            const viewFormatsPtr = dv.getUint32(p + 20, true);
-            const alphaMode = decodeEnum(COMPOSITE_ALPHA_MODES, dv.getUint32(p + 24, true), "WGPUCompositeAlphaMode");
-            const width = dv.getUint32(p + 28, true);
-            const height = dv.getUint32(p + 32, true);
-
-            if (ctx.canvas && width > 0 && height > 0) {
-                ctx.canvas.width = width;
-                ctx.canvas.height = height;
+            const usage = toFlags(dv.getBigUint64(p + 16, true), "WGPUSurfaceConfiguration.usage");
+            // width (p + 24), height (p + 28) and presentMode (p + 44) are ignored.
+            const viewFormatCount = dv.getUint32(p + 32, true);
+            const viewFormatsPtr = dv.getUint32(p + 36, true);
+            const alphaModeValue = dv.getUint32(p + 40, true);
+            if (alphaModeValue === COMPOSITE_ALPHA_UNPREMULTIPLIED || alphaModeValue === COMPOSITE_ALPHA_INHERIT) {
+                throw new TypeError("WGPUCompositeAlphaMode::Unpremultiplied/Inherit are not supported by browser canvases");
             }
+            const alphaMode = decodeEnum(COMPOSITE_ALPHA_MODES, alphaModeValue, "WGPUCompositeAlphaMode");
 
+            // No width/height: the host page owns the canvas backing-store size (see
+            // the ResizeObserver in main.js), and a canvas context always matches its canvas.
             const config = {
                 device: cfgDevice,
                 format: cfgFormat,
+                usage,
             };
-            if (usage !== 0) config.usage = usage;
             if (alphaMode !== undefined) config.alphaMode = alphaMode;
             const viewFormats = readFormatArray(dv, viewFormatsPtr, viewFormatCount);
             if (viewFormats !== undefined) config.viewFormats = viewFormats;
@@ -584,11 +709,19 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             const ctx = handles.get(surfaceH, "WGPUSurface");
             const p = surfaceTexturePtr >>> 0;
             const dv = view();
+            // Each call stores a NEW handle. The caller owns it and must call
+            // wgpuTextureRelease on it once per frame, or the handle table fills up.
             try {
                 const texHandle = handles.store(ctx.getCurrentTexture());
                 dv.setUint32(p + 4, texHandle, true);
                 dv.setUint32(p + 8, SURFACE_STATUS_SUCCESS_OPTIMAL, true);
-            } catch {
+                surfaceErrorLogged = false;
+            } catch (error) {
+                // Log once per failure streak: this is called every frame.
+                if (!surfaceErrorLogged) {
+                    console.error("wgpuSurfaceGetCurrentTexture failed (further errors suppressed until it succeeds):", error);
+                    surfaceErrorLogged = true;
+                }
                 dv.setUint32(p + 4, 0, true);
                 dv.setUint32(p + 8, SURFACE_STATUS_ERROR, true);
             }
@@ -603,7 +736,9 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
         },
 
         wgpuSurfaceRelease: release,
+        wgpuSurfaceAddRef: addRef,
         wgpuAdapterRelease: release,
+        wgpuAdapterAddRef: addRef,
 
         // WGPUDevice
         wgpuDeviceGetQueue(deviceH) {
@@ -616,10 +751,12 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             const p = descPtr >>> 0;
             const dv = view();
             const label = readString(dv, p + 4);
+            if (dv.getUint32(p + 32, true) !== 0) {
+                throw new TypeError("WGPUBufferDescriptor.mappedAtCreation is not supported: buffer mapping is not implemented, use wgpuQueueWriteBuffer");
+            }
             const desc = {
-                usage: dv.getUint32(p + 12, true),
-                size: toSafeSize64(dv.getBigUint64(p + 16, true), "WGPUBufferDescriptor.size"),
-                mappedAtCreation: dv.getUint32(p + 24, true) !== 0,
+                usage: toFlags(dv.getBigUint64(p + 16, true), "WGPUBufferDescriptor.usage"),
+                size: toSafeSize64(dv.getBigUint64(p + 24, true), "WGPUBufferDescriptor.size"),
             };
             if (label !== undefined) desc.label = label;
             return handles.store(dev.createBuffer(desc));
@@ -630,19 +767,19 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             const p = descPtr >>> 0;
             const dv = view();
             const label = readString(dv, p + 4);
-            const usage = dv.getUint32(p + 12, true);
-            const dimension = decodeEnum(TEXTURE_DIMENSIONS, dv.getUint32(p + 16, true), "WGPUTextureDimension");
-            const size = readExtent3D(dv, p + 20);
-            const formatVal = requireEnum(TEXTURE_FORMATS, dv.getUint32(p + 32, true), "WGPUTextureFormat");
-            const mipLevelCount = dv.getUint32(p + 36, true);
-            const sampleCount = dv.getUint32(p + 40, true);
-            const viewFormatCount = dv.getUint32(p + 44, true);
-            const viewFormatsPtr = dv.getUint32(p + 48, true);
+            const usage = toFlags(dv.getBigUint64(p + 16, true), "WGPUTextureDescriptor.usage");
+            const dimension = decodeEnum(TEXTURE_DIMENSIONS, dv.getUint32(p + 24, true), "WGPUTextureDimension");
+            const size = readExtent3D(dv, p + 28);
+            const formatVal = requireEnum(TEXTURE_FORMATS, dv.getUint32(p + 40, true), "WGPUTextureFormat");
+            const mipLevelCount = dv.getUint32(p + 44, true);
+            const sampleCount = dv.getUint32(p + 48, true);
+            const viewFormatCount = dv.getUint32(p + 52, true);
+            const viewFormatsPtr = dv.getUint32(p + 56, true);
 
             const desc = {
                 size,
-                mipLevelCount: mipLevelCount === 0 ? 1 : mipLevelCount,
-                sampleCount: sampleCount === 0 ? 1 : sampleCount,
+                mipLevelCount,
+                sampleCount,
                 format: formatVal,
                 usage,
             };
@@ -681,9 +818,9 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             if (minFilter !== undefined) desc.minFilter = minFilter;
             if (mipmapFilter !== undefined) desc.mipmapFilter = mipmapFilter;
             desc.lodMinClamp = lodMinClamp;
-            if (lodMaxClamp !== 0) desc.lodMaxClamp = lodMaxClamp;
+            desc.lodMaxClamp = lodMaxClamp;
             if (compare !== undefined) desc.compare = compare;
-            if (maxAnisotropy > 1) desc.maxAnisotropy = maxAnisotropy;
+            desc.maxAnisotropy = maxAnisotropy;
             return handles.store(dev.createSampler(desc));
         },
 
@@ -697,44 +834,52 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             const entries = new Array(entryCount);
 
             for (let i = 0; i < entryCount; i++) {
-                const ep = entriesPtr + i * 80;
+                const ep = entriesPtr + i * 88;
+                requireZero(dv.getUint32(ep + 16, true), "WGPUBindGroupLayoutEntry.bindingArraySize");
                 const entry = {
                     binding: dv.getUint32(ep + 4, true),
-                    visibility: dv.getUint32(ep + 8, true),
+                    visibility: toFlags(dv.getBigUint64(ep + 8, true), "WGPUBindGroupLayoutEntry.visibility"),
                 };
 
-                const bufferType = decodeEnum(BUFFER_BINDING_TYPES, dv.getUint32(ep + 20, true), "WGPUBufferBindingType");
-                if (bufferType !== undefined) {
-                    entry.buffer = {
-                        type: bufferType,
-                        hasDynamicOffset: dv.getUint32(ep + 24, true) !== 0,
-                        minBindingSize: toSafeSize64(dv.getBigUint64(ep + 32, true), "minBindingSize"),
+                // For each of the four binding kinds: type BindingNotUsed (0) means the
+                // entry is not of that kind; Undefined (1) means "use the WebGPU default".
+                const bufferTypeValue = dv.getUint32(ep + 28, true);
+                if (bufferTypeValue !== BINDING_NOT_USED) {
+                    const buffer = {
+                        hasDynamicOffset: dv.getUint32(ep + 32, true) !== 0,
+                        minBindingSize: toSafeSize64(dv.getBigUint64(ep + 40, true), "minBindingSize"),
                     };
+                    const type = decodeEnum(BUFFER_BINDING_TYPES, bufferTypeValue, "WGPUBufferBindingType");
+                    if (type !== undefined) buffer.type = type;
+                    entry.buffer = buffer;
                 }
 
-                const samplerType = decodeEnum(SAMPLER_BINDING_TYPES, dv.getUint32(ep + 44, true), "WGPUSamplerBindingType");
-                if (samplerType !== undefined) {
-                    entry.sampler = { type: samplerType };
+                const samplerTypeValue = dv.getUint32(ep + 52, true);
+                if (samplerTypeValue !== BINDING_NOT_USED) {
+                    const sampler = {};
+                    const type = decodeEnum(SAMPLER_BINDING_TYPES, samplerTypeValue, "WGPUSamplerBindingType");
+                    if (type !== undefined) sampler.type = type;
+                    entry.sampler = sampler;
                 }
 
-                const sampleType = decodeEnum(TEXTURE_SAMPLE_TYPES, dv.getUint32(ep + 52, true), "WGPUTextureSampleType");
-                if (sampleType !== undefined) {
-                    const tex = {
-                        sampleType,
-                        multisampled: dv.getUint32(ep + 60, true) !== 0,
-                    };
-                    const viewDim = decodeEnum(TEXTURE_VIEW_DIMENSIONS, dv.getUint32(ep + 56, true), "WGPUTextureViewDimension");
+                const sampleTypeValue = dv.getUint32(ep + 60, true);
+                if (sampleTypeValue !== BINDING_NOT_USED) {
+                    const tex = { multisampled: dv.getUint32(ep + 68, true) !== 0 };
+                    const sampleType = decodeEnum(TEXTURE_SAMPLE_TYPES, sampleTypeValue, "WGPUTextureSampleType");
+                    if (sampleType !== undefined) tex.sampleType = sampleType;
+                    const viewDim = decodeEnum(TEXTURE_VIEW_DIMENSIONS, dv.getUint32(ep + 64, true), "WGPUTextureViewDimension");
                     if (viewDim !== undefined) tex.viewDimension = viewDim;
                     entry.texture = tex;
                 }
 
-                const storageAccess = decodeEnum(STORAGE_TEXTURE_ACCESS, dv.getUint32(ep + 68, true), "WGPUStorageTextureAccess");
-                if (storageAccess !== undefined) {
+                const storageAccessValue = dv.getUint32(ep + 76, true);
+                if (storageAccessValue !== BINDING_NOT_USED) {
                     const st = {
-                        access: storageAccess,
-                        format: requireEnum(TEXTURE_FORMATS, dv.getUint32(ep + 72, true), "WGPUTextureFormat"),
+                        format: requireEnum(TEXTURE_FORMATS, dv.getUint32(ep + 80, true), "WGPUTextureFormat"),
                     };
-                    const viewDim = decodeEnum(TEXTURE_VIEW_DIMENSIONS, dv.getUint32(ep + 76, true), "WGPUTextureViewDimension");
+                    const access = decodeEnum(STORAGE_TEXTURE_ACCESS, storageAccessValue, "WGPUStorageTextureAccess");
+                    if (access !== undefined) st.access = access;
+                    const viewDim = decodeEnum(TEXTURE_VIEW_DIMENSIONS, dv.getUint32(ep + 84, true), "WGPUTextureViewDimension");
                     if (viewDim !== undefined) st.viewDimension = viewDim;
                     entry.storageTexture = st;
                 }
@@ -754,6 +899,7 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             const label = readString(dv, p + 4);
             const layoutCount = dv.getUint32(p + 12, true);
             const layoutsPtr = dv.getUint32(p + 16, true);
+            requireZero(dv.getUint32(p + 20, true), "WGPUPipelineLayoutDescriptor.immediateSize");
             const bindGroupLayouts = new Array(layoutCount);
             for (let i = 0; i < layoutCount; i++) {
                 bindGroupLayouts[i] = handles.getOptional(dv.getUint32(layoutsPtr + i * 4, true), "WGPUBindGroupLayout") ?? null;
@@ -787,7 +933,7 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
                         offset: toSafeSize64(dv.getBigUint64(ep + 16, true), "WGPUBindGroupEntry.offset"),
                     };
                     const size = toOptionalSize64(dv.getBigUint64(ep + 24, true), "WGPUBindGroupEntry.size");
-                    if (size !== undefined && size !== 0) resource.size = size;
+                    if (size !== undefined) resource.size = size;
                 } else if (samplerHandle !== 0) {
                     resource = handles.get(samplerHandle, "WGPUSampler");
                 } else if (texViewHandle !== 0) {
@@ -811,15 +957,19 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             const nextInChain = dv.getUint32(p, true);
             const label = readString(dv, p + 4);
 
+            // The source comes from a chained WGPUShaderSourceWGSL.
             let code;
-            if (nextInChain !== 0) {
-                const sType = dv.getUint32(nextInChain + 4, true);
+            let foundWgsl = false;
+            for (let chain = nextInChain; chain !== 0; chain = dv.getUint32(chain, true)) {
+                const sType = dv.getUint32(chain + 4, true);
                 if (sType !== STYPE_SHADER_SOURCE_WGSL) {
                     throw new TypeError(`Unsupported WGPUShaderModuleDescriptor chain sType: ${sType}`);
                 }
-                code = readString(dv, nextInChain + 8);
-            } else {
-                code = readString(dv, p + 12);
+                code = readString(dv, chain + 8);
+                foundWgsl = true;
+            }
+            if (!foundWgsl) {
+                throw new TypeError("WGPUShaderModuleDescriptor needs a chained WGPUShaderSourceWGSL");
             }
 
             const desc = { code: code ?? "" };
@@ -888,9 +1038,9 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             let depthStencil;
             if (depthStencilPtr !== 0) {
                 const dp = depthStencilPtr;
+                const depthWriteEnabled = toOptionalBool(dv.getUint32(dp + 8, true), "depthWriteEnabled");
                 depthStencil = {
                     format: requireEnum(TEXTURE_FORMATS, dv.getUint32(dp + 4, true), "WGPUTextureFormat"),
-                    depthWriteEnabled: dv.getUint32(dp + 8, true) !== 0,
                     stencilFront: readStencilFaceState(dv, dp + 16),
                     stencilBack: readStencilFaceState(dv, dp + 32),
                     stencilReadMask: dv.getUint32(dp + 48, true),
@@ -901,6 +1051,8 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
                 };
                 const depthCompare = decodeEnum(COMPARE_FUNCTIONS, dv.getUint32(dp + 12, true), "WGPUCompareFunction");
                 if (depthCompare !== undefined) depthStencil.depthCompare = depthCompare;
+                // Undefined is left unset so WebGPU validation requires it for depth formats.
+                if (depthWriteEnabled !== undefined) depthStencil.depthWriteEnabled = depthWriteEnabled;
             }
 
             // Multisample state at p + 76
@@ -908,8 +1060,8 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             const sampleMask = dv.getUint32(p + 84, true);
             const alphaToCoverageEnabled = dv.getUint32(p + 88, true) !== 0;
             const multisample = {
-                count: sampleCount === 0 ? 1 : sampleCount,
-                mask: sampleMask === 0 ? 0xffffffff : sampleMask,
+                count: sampleCount,
+                mask: sampleMask,
                 alphaToCoverageEnabled,
             };
 
@@ -926,7 +1078,7 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
                 const targets = new Array(targetCount);
 
                 for (let i = 0; i < targetCount; i++) {
-                    const tp = targetsPtr + i * 16;
+                    const tp = targetsPtr + i * 24;
                     const formatVal = dv.getUint32(tp + 4, true);
                     if (formatVal === 0) {
                         targets[i] = null;
@@ -934,7 +1086,7 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
                     }
                     const target = {
                         format: requireEnum(TEXTURE_FORMATS, formatVal, "WGPUTextureFormat"),
-                        writeMask: dv.getUint32(tp + 12, true),
+                        writeMask: toFlags(dv.getBigUint64(tp + 16, true), "WGPUColorTargetState.writeMask"),
                     };
                     const blendPtr = dv.getUint32(tp + 8, true);
                     if (blendPtr !== 0) {
@@ -1001,12 +1153,14 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
         },
 
         wgpuDeviceRelease: release,
+        wgpuDeviceAddRef: addRef,
 
         // WGPUBuffer
         wgpuBufferDestroy(bufferH) {
             handles.get(bufferH, "WGPUBuffer").destroy();
         },
         wgpuBufferRelease: release,
+        wgpuBufferAddRef: addRef,
 
         // WGPUTexture
         wgpuTextureCreateView(textureH, descPtr) {
@@ -1025,15 +1179,15 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             const baseArrayLayer = dv.getUint32(p + 28, true);
             const arrayLayerCount = dv.getUint32(p + 32, true);
             const aspect = decodeEnum(TEXTURE_ASPECTS, dv.getUint32(p + 36, true), "WGPUTextureAspect");
-            const usage = dv.getUint32(p + 40, true);
+            const usage = toFlags(dv.getBigUint64(p + 40, true), "WGPUTextureViewDescriptor.usage");
 
             if (label !== undefined) desc.label = label;
             if (fmt !== undefined) desc.format = fmt;
             if (dim !== undefined) desc.dimension = dim;
             if (baseMipLevel !== 0) desc.baseMipLevel = baseMipLevel;
-            if (mipLevelCount !== 0 && mipLevelCount !== UINT32_UNDEFINED) desc.mipLevelCount = mipLevelCount;
+            if (mipLevelCount !== UINT32_UNDEFINED) desc.mipLevelCount = mipLevelCount;
             if (baseArrayLayer !== 0) desc.baseArrayLayer = baseArrayLayer;
-            if (arrayLayerCount !== 0 && arrayLayerCount !== UINT32_UNDEFINED) desc.arrayLayerCount = arrayLayerCount;
+            if (arrayLayerCount !== UINT32_UNDEFINED) desc.arrayLayerCount = arrayLayerCount;
             if (aspect !== undefined) desc.aspect = aspect;
             if (usage !== 0) desc.usage = usage;
             return handles.store(tex.createView(desc));
@@ -1043,12 +1197,19 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             handles.get(textureH, "WGPUTexture").destroy();
         },
         wgpuTextureRelease: release,
+        wgpuTextureAddRef: addRef,
         wgpuTextureViewRelease: release,
+        wgpuTextureViewAddRef: addRef,
         wgpuSamplerRelease: release,
+        wgpuSamplerAddRef: addRef,
         wgpuBindGroupLayoutRelease: release,
+        wgpuBindGroupLayoutAddRef: addRef,
         wgpuBindGroupRelease: release,
+        wgpuBindGroupAddRef: addRef,
         wgpuPipelineLayoutRelease: release,
+        wgpuPipelineLayoutAddRef: addRef,
         wgpuShaderModuleRelease: release,
+        wgpuShaderModuleAddRef: addRef,
 
         // WGPURenderPipeline / WGPUComputePipeline
         wgpuRenderPipelineGetBindGroupLayout(pipelineH, groupIndex) {
@@ -1056,12 +1217,14 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             return handles.store(pipeline.getBindGroupLayout(groupIndex >>> 0));
         },
         wgpuRenderPipelineRelease: release,
+        wgpuRenderPipelineAddRef: addRef,
 
         wgpuComputePipelineGetBindGroupLayout(pipelineH, groupIndex) {
             const pipeline = handles.get(pipelineH, "WGPUComputePipeline");
             return handles.store(pipeline.getBindGroupLayout(groupIndex >>> 0));
         },
         wgpuComputePipelineRelease: release,
+        wgpuComputePipelineAddRef: addRef,
 
         // WGPUCommandEncoder
         wgpuCommandEncoderBeginRenderPass(encoderH, descPtr) {
@@ -1072,6 +1235,8 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
             const attachmentCount = dv.getUint32(p + 12, true);
             const attachmentsPtr = dv.getUint32(p + 16, true);
             const depthStencilPtr = dv.getUint32(p + 20, true);
+            requireZero(dv.getUint32(p + 24, true), "WGPURenderPassDescriptor.occlusionQuerySet");
+            requireZero(dv.getUint32(p + 28, true), "WGPURenderPassDescriptor.timestampWrites");
 
             const colorAttachments = new Array(attachmentCount);
             for (let i = 0; i < attachmentCount; i++) {
@@ -1089,7 +1254,7 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
                 };
                 const depthSlice = dv.getUint32(ap + 8, true);
                 const resolveTarget = handles.getOptional(dv.getUint32(ap + 12, true), "WGPUTextureView");
-                if (depthSlice !== UINT32_UNDEFINED && depthSlice !== 0) {
+                if (depthSlice !== UINT32_UNDEFINED) {
                     attachment.depthSlice = depthSlice;
                 }
                 if (resolveTarget !== undefined) attachment.resolveTarget = resolveTarget;
@@ -1115,7 +1280,9 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
 
                 if (depthLoadOp !== undefined) ds.depthLoadOp = depthLoadOp;
                 if (depthStoreOp !== undefined) ds.depthStoreOp = depthStoreOp;
-                ds.depthClearValue = depthClearValue;
+                // NaN means WGPU_DEPTH_CLEAR_VALUE_UNDEFINED: leave it unset so WebGPU
+                // validation rejects depthLoadOp = Clear without an explicit value.
+                if (!Number.isNaN(depthClearValue)) ds.depthClearValue = depthClearValue;
                 if (depthReadOnly) ds.depthReadOnly = true;
                 if (stencilLoadOp !== undefined) ds.stencilLoadOp = stencilLoadOp;
                 if (stencilStoreOp !== undefined) ds.stencilStoreOp = stencilStoreOp;
@@ -1134,18 +1301,24 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
                 return handles.store(encoder.beginComputePass());
             }
             const dv = view();
+            requireZero(dv.getUint32(p + 12, true), "WGPUComputePassDescriptor.timestampWrites");
             const label = readString(dv, p + 4);
             return handles.store(encoder.beginComputePass(label !== undefined ? { label } : undefined));
         },
 
         wgpuCommandEncoderCopyBufferToBuffer(encoderH, srcH, srcOffset, dstH, dstOffset, size) {
             const encoder = handles.get(encoderH, "WGPUCommandEncoder");
+            const src = handles.get(srcH, "WGPUBuffer");
+            const resolvedSrcOffset = toSafeSize64(srcOffset, "sourceOffset");
+            // WGPU_WHOLE_SIZE copies the rest of the source buffer. Resolve it here
+            // instead of relying on browsers supporting the optional size argument.
+            const resolvedSize = toOptionalSize64(size, "size") ?? Math.max(0, src.size - resolvedSrcOffset);
             encoder.copyBufferToBuffer(
-                handles.get(srcH, "WGPUBuffer"),
-                toSafeSize64(srcOffset, "sourceOffset"),
+                src,
+                resolvedSrcOffset,
                 handles.get(dstH, "WGPUBuffer"),
                 toSafeSize64(dstOffset, "destinationOffset"),
-                toSafeSize64(size, "size"),
+                resolvedSize,
             );
         },
 
@@ -1203,6 +1376,7 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
         },
 
         wgpuCommandEncoderRelease: release,
+        wgpuCommandEncoderAddRef: addRef,
 
         // WGPURenderPassEncoder
         wgpuRenderPassEncoderSetPipeline(passH, pipelineH) {
@@ -1292,6 +1466,7 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
         },
 
         wgpuRenderPassEncoderRelease: release,
+        wgpuRenderPassEncoderAddRef: addRef,
 
         // WGPUComputePassEncoder
         wgpuComputePassEncoderSetPipeline(passH, pipelineH) {
@@ -1322,7 +1497,9 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
         },
 
         wgpuComputePassEncoderRelease: release,
+        wgpuComputePassEncoderAddRef: addRef,
         wgpuCommandBufferRelease: release,
+        wgpuCommandBufferAddRef: addRef,
 
         // WGPUQueue
         wgpuQueueSubmit(queueH, commandCount, commandsPtr) {
@@ -1361,6 +1538,7 @@ export function createWebGPUBindings({ adapter, device, context, format, memory 
         },
 
         wgpuQueueRelease: release,
+        wgpuQueueAddRef: addRef,
     };
 
     return {

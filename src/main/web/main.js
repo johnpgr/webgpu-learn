@@ -24,7 +24,8 @@ async function main() {
     const format = navigator.gpu.getPreferredCanvasFormat();
     context.configure({ device, format, alphaMode: "opaque" });
 
-    // Keep the backing store matched to the displayed size.
+    // This host owns the canvas backing-store size. wgpuSurfaceConfigure ignores
+    // the width/height in WGPUSurfaceConfiguration.
     const resize = () => {
         const dpr = window.devicePixelRatio || 1;
         canvas.width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
@@ -60,7 +61,14 @@ async function main() {
 
     let last = performance.now();
     const loop = (now) => {
-        inst.exports.frame((now - last) / 1000);
+        try {
+            inst.exports.frame((now - last) / 1000);
+        } catch (e) {
+            // Wasm state is unreliable after a trap, so report once and stop the loop.
+            console.error(e);
+            status(`Frame error (loop stopped): ${e.message}`);
+            return;
+        }
         last = now;
         requestAnimationFrame(loop);
     };

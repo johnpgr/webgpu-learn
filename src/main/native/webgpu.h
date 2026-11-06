@@ -3,18 +3,50 @@
 #include "core/base.h"
 
 // ============================================================================
-// Standard webgpu.h C/C++ Binding Layer for Wasm32
+// webgpu.h C/C++ Binding Layer for Wasm32
 //
-// Follows the standard webgpu-headers (webgpu.h) naming and descriptor layout
-// conventions used by Dawn/emdawnwebgpu, wgpu-native, and LearnWebGPU:
+// A subset of the official webgpu-headers `webgpu.h` (main branch) for wasm32,
+// backed by the browser's WebGPU API through src/main/web/webgpu.js. Enum
+// values, flag values (WGPUFlags is 64-bit) and struct layouts are identical to
+// the official header: every struct layout below is checked with a static_assert
+// generated from the official header compiled for wasm32.
 // - Types & descriptors use the `WGPU` prefix and camelCase fields.
-// - Enums & bitflags use `WGPU<Type>_<Value>`.
+// - Enums & bitflags are `enum class WGPU<Type>` with unprefixed values: `WGPUTextureFormat::R8Unorm`.
+//   Names starting with a digit get a `D` prefix (`WGPUTextureDimension::D2`).
 // - Functions use `wgpu<Object><Method>` (imported via `GPU(...)` from `core/base.h`).
-// - Every object type has a corresponding `wgpu<Object>Release` function.
+// - Every object type has wgpu<Object>AddRef and wgpu<Object>Release.
+// - Handles are 32-bit ids into a table in the JS host, not pointers.
+//
+// Differences from the official header:
+// - Only the functions and descriptors declared here exist. Instance, async
+//   requests, error scopes, query sets, render bundles and buffer mapping are
+//   not implemented.
+// - Not implemented, and rejected at runtime instead of being ignored (the JS
+//   host throws, which traps wasm): WGPUBufferDescriptor::mappedAtCreation,
+//   WGPUBindGroupLayoutEntry::bindingArraySize, WGPUPipelineLayoutDescriptor::
+//   immediateSize, and the occlusionQuerySet / timestampWrites pass fields.
+// - Surface: wgpuSurfaceGetPreferredFormat is an extension (official code uses
+//   wgpuSurfaceGetCapabilities, which needs a wasm-side allocator). Unpremultiplied
+//   and Inherit alpha modes are rejected (browser canvases cannot do them).
+//   width, height and presentMode in WGPUSurfaceConfiguration are ignored: the
+//   host page owns the canvas size.
+// - WGPUShaderModuleDescriptor takes WGSL only, via a chained WGPUShaderSourceWGSL.
+// - Default member initializers (e.g. mipLevelCount = 1, depthClearValue = NaN)
+//   match WebGPU's defaults. Some use the concrete default where the official
+//   WGPU_*_INIT macro uses Undefined (e.g. topology = TriangleList, stepMode =
+//   Vertex); the result is the same. The JS host forwards values as-is and lets
+//   WebGPU validation report mistakes; it invents no defaults.
+//
+// Ownership: AddRef/Release are reference counted by the host. Reaching zero only
+// drops the handle; the browser object (and any GPU memory) is freed when JS
+// garbage collection gets to it. Call wgpuBufferDestroy / wgpuTextureDestroy to
+// free big resources eagerly. wgpuSurfaceGetCurrentTexture returns a NEW texture
+// handle on every call; you must wgpuTextureRelease it (and any view made from
+// it) each frame.
 // ============================================================================
 
 typedef uint WGPUBool;
-typedef uint WGPUFlags;
+typedef ulong WGPUFlags;
 
 constexpr WGPUBool WGPU_FALSE = 0u;
 constexpr WGPUBool WGPU_TRUE = 1u;
@@ -23,7 +55,12 @@ constexpr ulong WGPU_WHOLE_SIZE = ~(ulong)0;
 constexpr uint WGPU_MIP_LEVEL_COUNT_UNDEFINED = ~0u;
 constexpr uint WGPU_ARRAY_LAYER_COUNT_UNDEFINED = ~0u;
 constexpr uint WGPU_DEPTH_SLICE_UNDEFINED = ~0u;
+constexpr uint WGPU_QUERY_SET_INDEX_UNDEFINED = ~0u;
+constexpr uint WGPU_COPY_STRIDE_UNDEFINED = ~0u;
 constexpr usz WGPU_STRLEN = ~(usz)0;
+// Float NaN: "no depth clear value given". Forwarded as unset, so WebGPU rejects
+// depthLoadOp = Clear unless you set depthClearValue explicitly.
+constexpr float WGPU_DEPTH_CLEAR_VALUE_UNDEFINED = __builtin_nanf("");
 
 struct WGPUStringView {
     const char* data;
@@ -33,8 +70,19 @@ struct WGPUStringView {
     constexpr WGPUStringView(const char* s, usz n) : data(s), length(n) {}
     constexpr WGPUStringView(decltype(nullptr)) : data(nullptr), length(0) {}
 
+    // Matches string literals and char arrays alike. The length is the number of
+    // characters before the first NUL (or N if there is none), so `char buf[64]`
+    // holding "hi" gives 2, not 63. A literal with an embedded NUL is cut there;
+    // build it with the (data, length) constructor instead.
     template <usz N>
-    constexpr WGPUStringView(const char (&s)[N]) : data(s), length(N - 1) {}
+    constexpr WGPUStringView(const char (&s)[N]) : data(s), length(bounded_strlen(s, N)) {}
+
+private:
+    static constexpr usz bounded_strlen(const char* s, usz max) {
+        usz n = 0;
+        while (n < max && s[n] != '\0') n++;
+        return n;
+    }
 };
 
 static_assert(sizeof(WGPUStringView) == 8);
@@ -78,371 +126,473 @@ WGPU_DEFINE_HANDLE(WGPUCommandEncoder);
 WGPU_DEFINE_HANDLE(WGPURenderPassEncoder);
 WGPU_DEFINE_HANDLE(WGPUComputePassEncoder);
 WGPU_DEFINE_HANDLE(WGPUCommandBuffer);
+WGPU_DEFINE_HANDLE(WGPUQuerySet); // only for descriptor layout; query sets are not implemented
 
 #undef WGPU_DEFINE_HANDLE
 
 // ----------------------------------------------------------------------------
-// Chained Structs (for standard webgpu.h descriptor extensions like WGSL)
+// Enumerations (values identical to webgpu-headers `main`; 0 is Undefined/default,
+// except the *BindingType enums where 0 is BindingNotUsed and 1 is Undefined)
 // ----------------------------------------------------------------------------
 
-enum WGPUSType : uint {
-    WGPUSType_Invalid = 0,
-    WGPUSType_ShaderSourceWGSL = 1,
+enum class WGPUSurfaceGetCurrentTextureStatus : uint {
+    SuccessOptimal = 1,
+    SuccessSuboptimal = 2,
+    Timeout = 3,
+    Outdated = 4,
+    Lost = 5,
+    Error = 6,
 };
+
+enum class WGPUCompositeAlphaMode : uint {
+    Auto = 0,
+    Opaque = 1,
+    Premultiplied = 2,
+    Unpremultiplied = 3,
+    Inherit = 4,
+};
+
+enum class WGPUPresentMode : uint {
+    Undefined = 0,
+    Fifo = 1,
+    FifoRelaxed = 2,
+    Immediate = 3,
+    Mailbox = 4,
+};
+
+enum class WGPUOptionalBool : uint {
+    False = 0,
+    True = 1,
+    Undefined = 2,
+};
+
+enum class WGPUSType : uint {
+    ShaderSourceSPIRV = 1,
+    ShaderSourceWGSL = 2,
+    RenderPassMaxDrawCount = 3,
+    SurfaceSourceMetalLayer = 4,
+    SurfaceSourceWindowsHWND = 5,
+    SurfaceSourceXlibWindow = 6,
+    SurfaceSourceWaylandSurface = 7,
+    SurfaceSourceAndroidNativeWindow = 8,
+    SurfaceSourceXCBWindow = 9,
+    SurfaceColorManagement = 10,
+    RequestAdapterWebXROptions = 11,
+    TextureComponentSwizzleDescriptor = 12,
+    ExternalTextureBindingLayout = 13,
+    ExternalTextureBindingEntry = 14,
+    CompatibilityModeLimits = 15,
+    TextureBindingViewDimension = 16,
+};
+
+enum class WGPUTextureFormat : uint {
+    Undefined = 0,
+    R8Unorm = 1,
+    R8Snorm = 2,
+    R8Uint = 3,
+    R8Sint = 4,
+    R16Unorm = 5,
+    R16Snorm = 6,
+    R16Uint = 7,
+    R16Sint = 8,
+    R16Float = 9,
+    RG8Unorm = 10,
+    RG8Snorm = 11,
+    RG8Uint = 12,
+    RG8Sint = 13,
+    R32Float = 14,
+    R32Uint = 15,
+    R32Sint = 16,
+    RG16Unorm = 17,
+    RG16Snorm = 18,
+    RG16Uint = 19,
+    RG16Sint = 20,
+    RG16Float = 21,
+    RGBA8Unorm = 22,
+    RGBA8UnormSrgb = 23,
+    RGBA8Snorm = 24,
+    RGBA8Uint = 25,
+    RGBA8Sint = 26,
+    BGRA8Unorm = 27,
+    BGRA8UnormSrgb = 28,
+    RGB10A2Uint = 29,
+    RGB10A2Unorm = 30,
+    RG11B10Ufloat = 31,
+    RGB9E5Ufloat = 32,
+    RG32Float = 33,
+    RG32Uint = 34,
+    RG32Sint = 35,
+    RGBA16Unorm = 36,
+    RGBA16Snorm = 37,
+    RGBA16Uint = 38,
+    RGBA16Sint = 39,
+    RGBA16Float = 40,
+    RGBA32Float = 41,
+    RGBA32Uint = 42,
+    RGBA32Sint = 43,
+    Stencil8 = 44,
+    Depth16Unorm = 45,
+    Depth24Plus = 46,
+    Depth24PlusStencil8 = 47,
+    Depth32Float = 48,
+    Depth32FloatStencil8 = 49,
+    BC1RGBAUnorm = 50,
+    BC1RGBAUnormSrgb = 51,
+    BC2RGBAUnorm = 52,
+    BC2RGBAUnormSrgb = 53,
+    BC3RGBAUnorm = 54,
+    BC3RGBAUnormSrgb = 55,
+    BC4RUnorm = 56,
+    BC4RSnorm = 57,
+    BC5RGUnorm = 58,
+    BC5RGSnorm = 59,
+    BC6HRGBUfloat = 60,
+    BC6HRGBFloat = 61,
+    BC7RGBAUnorm = 62,
+    BC7RGBAUnormSrgb = 63,
+    ETC2RGB8Unorm = 64,
+    ETC2RGB8UnormSrgb = 65,
+    ETC2RGB8A1Unorm = 66,
+    ETC2RGB8A1UnormSrgb = 67,
+    ETC2RGBA8Unorm = 68,
+    ETC2RGBA8UnormSrgb = 69,
+    EACR11Unorm = 70,
+    EACR11Snorm = 71,
+    EACRG11Unorm = 72,
+    EACRG11Snorm = 73,
+    ASTC4x4Unorm = 74,
+    ASTC4x4UnormSrgb = 75,
+    ASTC5x4Unorm = 76,
+    ASTC5x4UnormSrgb = 77,
+    ASTC5x5Unorm = 78,
+    ASTC5x5UnormSrgb = 79,
+    ASTC6x5Unorm = 80,
+    ASTC6x5UnormSrgb = 81,
+    ASTC6x6Unorm = 82,
+    ASTC6x6UnormSrgb = 83,
+    ASTC8x5Unorm = 84,
+    ASTC8x5UnormSrgb = 85,
+    ASTC8x6Unorm = 86,
+    ASTC8x6UnormSrgb = 87,
+    ASTC8x8Unorm = 88,
+    ASTC8x8UnormSrgb = 89,
+    ASTC10x5Unorm = 90,
+    ASTC10x5UnormSrgb = 91,
+    ASTC10x6Unorm = 92,
+    ASTC10x6UnormSrgb = 93,
+    ASTC10x8Unorm = 94,
+    ASTC10x8UnormSrgb = 95,
+    ASTC10x10Unorm = 96,
+    ASTC10x10UnormSrgb = 97,
+    ASTC12x10Unorm = 98,
+    ASTC12x10UnormSrgb = 99,
+    ASTC12x12Unorm = 100,
+    ASTC12x12UnormSrgb = 101,
+};
+
+enum class WGPUTextureDimension : uint {
+    Undefined = 0,
+    D1 = 1,
+    D2 = 2,
+    D3 = 3,
+};
+
+enum class WGPUTextureViewDimension : uint {
+    Undefined = 0,
+    D1 = 1,
+    D2 = 2,
+    D2Array = 3,
+    Cube = 4,
+    CubeArray = 5,
+    D3 = 6,
+};
+
+enum class WGPUTextureAspect : uint {
+    Undefined = 0,
+    All = 1,
+    StencilOnly = 2,
+    DepthOnly = 3,
+};
+
+enum class WGPULoadOp : uint {
+    Undefined = 0,
+    Load = 1,
+    Clear = 2,
+};
+
+enum class WGPUStoreOp : uint {
+    Undefined = 0,
+    Store = 1,
+    Discard = 2,
+};
+
+enum class WGPUPrimitiveTopology : uint {
+    Undefined = 0,
+    PointList = 1,
+    LineList = 2,
+    LineStrip = 3,
+    TriangleList = 4,
+    TriangleStrip = 5,
+};
+
+enum class WGPUIndexFormat : uint {
+    Undefined = 0,
+    Uint16 = 1,
+    Uint32 = 2,
+};
+
+enum class WGPUFrontFace : uint {
+    Undefined = 0,
+    CCW = 1,
+    CW = 2,
+};
+
+enum class WGPUCullMode : uint {
+    Undefined = 0,
+    None = 1,
+    Front = 2,
+    Back = 3,
+};
+
+enum class WGPUCompareFunction : uint {
+    Undefined = 0,
+    Never = 1,
+    Less = 2,
+    Equal = 3,
+    LessEqual = 4,
+    Greater = 5,
+    NotEqual = 6,
+    GreaterEqual = 7,
+    Always = 8,
+};
+
+enum class WGPUStencilOperation : uint {
+    Undefined = 0,
+    Keep = 1,
+    Zero = 2,
+    Replace = 3,
+    Invert = 4,
+    IncrementClamp = 5,
+    DecrementClamp = 6,
+    IncrementWrap = 7,
+    DecrementWrap = 8,
+};
+
+enum class WGPUBlendFactor : uint {
+    Undefined = 0,
+    Zero = 1,
+    One = 2,
+    Src = 3,
+    OneMinusSrc = 4,
+    SrcAlpha = 5,
+    OneMinusSrcAlpha = 6,
+    Dst = 7,
+    OneMinusDst = 8,
+    DstAlpha = 9,
+    OneMinusDstAlpha = 10,
+    SrcAlphaSaturated = 11,
+    Constant = 12,
+    OneMinusConstant = 13,
+    Src1 = 14,
+    OneMinusSrc1 = 15,
+    Src1Alpha = 16,
+    OneMinusSrc1Alpha = 17,
+};
+
+enum class WGPUBlendOperation : uint {
+    Undefined = 0,
+    Add = 1,
+    Subtract = 2,
+    ReverseSubtract = 3,
+    Min = 4,
+    Max = 5,
+};
+
+enum class WGPUVertexStepMode : uint {
+    Undefined = 0,
+    Vertex = 1,
+    Instance = 2,
+};
+
+enum class WGPUVertexFormat : uint {
+    Uint8 = 1,
+    Uint8x2 = 2,
+    Uint8x4 = 3,
+    Sint8 = 4,
+    Sint8x2 = 5,
+    Sint8x4 = 6,
+    Unorm8 = 7,
+    Unorm8x2 = 8,
+    Unorm8x4 = 9,
+    Snorm8 = 10,
+    Snorm8x2 = 11,
+    Snorm8x4 = 12,
+    Uint16 = 13,
+    Uint16x2 = 14,
+    Uint16x4 = 15,
+    Sint16 = 16,
+    Sint16x2 = 17,
+    Sint16x4 = 18,
+    Unorm16 = 19,
+    Unorm16x2 = 20,
+    Unorm16x4 = 21,
+    Snorm16 = 22,
+    Snorm16x2 = 23,
+    Snorm16x4 = 24,
+    Float16 = 25,
+    Float16x2 = 26,
+    Float16x4 = 27,
+    Float32 = 28,
+    Float32x2 = 29,
+    Float32x3 = 30,
+    Float32x4 = 31,
+    Uint32 = 32,
+    Uint32x2 = 33,
+    Uint32x3 = 34,
+    Uint32x4 = 35,
+    Sint32 = 36,
+    Sint32x2 = 37,
+    Sint32x3 = 38,
+    Sint32x4 = 39,
+    Unorm10_10_10_2 = 40,
+    Unorm8x4BGRA = 41,
+    Snorm10_10_10_2 = 42,
+};
+
+enum class WGPUAddressMode : uint {
+    Undefined = 0,
+    ClampToEdge = 1,
+    Repeat = 2,
+    MirrorRepeat = 3,
+};
+
+enum class WGPUFilterMode : uint {
+    Undefined = 0,
+    Nearest = 1,
+    Linear = 2,
+};
+
+enum class WGPUMipmapFilterMode : uint {
+    Undefined = 0,
+    Nearest = 1,
+    Linear = 2,
+};
+
+enum class WGPUBufferBindingType : uint {
+    BindingNotUsed = 0,
+    Undefined = 1,
+    Uniform = 2,
+    Storage = 3,
+    ReadOnlyStorage = 4,
+};
+
+enum class WGPUSamplerBindingType : uint {
+    BindingNotUsed = 0,
+    Undefined = 1,
+    Filtering = 2,
+    NonFiltering = 3,
+    Comparison = 4,
+};
+
+enum class WGPUTextureSampleType : uint {
+    BindingNotUsed = 0,
+    Undefined = 1,
+    Float = 2,
+    UnfilterableFloat = 3,
+    Depth = 4,
+    Sint = 5,
+    Uint = 6,
+};
+
+enum class WGPUStorageTextureAccess : uint {
+    BindingNotUsed = 0,
+    Undefined = 1,
+    WriteOnly = 2,
+    ReadOnly = 3,
+    ReadWrite = 4,
+};
+
+// ----------------------------------------------------------------------------
+// Chained Structs (descriptor extensions, e.g. WGSL shader source)
+// ----------------------------------------------------------------------------
 
 struct WGPUChainedStruct {
     const WGPUChainedStruct* next;
     WGPUSType sType;
 };
+
 static_assert(sizeof(WGPUChainedStruct) == 8);
 static_assert(__builtin_offsetof(WGPUChainedStruct, next) == 0);
 static_assert(__builtin_offsetof(WGPUChainedStruct, sType) == 4);
 
 struct WGPUShaderSourceWGSL {
-    WGPUChainedStruct chain = { nullptr, WGPUSType_ShaderSourceWGSL };
+    WGPUChainedStruct chain = { nullptr, WGPUSType::ShaderSourceWGSL };
     WGPUStringView code;
 };
+
 static_assert(sizeof(WGPUShaderSourceWGSL) == 16);
 static_assert(__builtin_offsetof(WGPUShaderSourceWGSL, chain) == 0);
 static_assert(__builtin_offsetof(WGPUShaderSourceWGSL, code) == 8);
 
-typedef WGPUShaderSourceWGSL WGPUShaderModuleWGSLDescriptor;
-
 // ----------------------------------------------------------------------------
-// Usage Bitflags (values match the WebGPU specification & webgpu.h)
+// Usage Bitflags (values match webgpu.h; WGPUFlags is 64-bit)
 // ----------------------------------------------------------------------------
 
-typedef WGPUFlags WGPUBufferUsage;
-constexpr WGPUBufferUsage WGPUBufferUsage_None         = 0x0000;
-constexpr WGPUBufferUsage WGPUBufferUsage_MapRead      = 0x0001;
-constexpr WGPUBufferUsage WGPUBufferUsage_MapWrite     = 0x0002;
-constexpr WGPUBufferUsage WGPUBufferUsage_CopySrc      = 0x0004;
-constexpr WGPUBufferUsage WGPUBufferUsage_CopyDst      = 0x0008;
-constexpr WGPUBufferUsage WGPUBufferUsage_Index        = 0x0010;
-constexpr WGPUBufferUsage WGPUBufferUsage_Vertex       = 0x0020;
-constexpr WGPUBufferUsage WGPUBufferUsage_Uniform      = 0x0040;
-constexpr WGPUBufferUsage WGPUBufferUsage_Storage      = 0x0080;
-constexpr WGPUBufferUsage WGPUBufferUsage_Indirect     = 0x0100;
-constexpr WGPUBufferUsage WGPUBufferUsage_QueryResolve = 0x0200;
+// Bitflag enums: combine with |, test with (a & b) != Type::None.
+// operator~ keeps only the bits defined for the type, so `~X` alone is a valid flag set.
+#define WGPU_DEFINE_FLAG_OPERATORS(T, AllBits)                                              \
+    constexpr T operator|(T a, T b) { return (T)((WGPUFlags)a | (WGPUFlags)b); }            \
+    constexpr T operator&(T a, T b) { return (T)((WGPUFlags)a & (WGPUFlags)b); }            \
+    constexpr T operator^(T a, T b) { return (T)((WGPUFlags)a ^ (WGPUFlags)b); }            \
+    constexpr T operator~(T a) { return (T)(~(WGPUFlags)a & (WGPUFlags)(AllBits)); }        \
+    constexpr T& operator|=(T& a, T b) { return a = a | b; }                                \
+    constexpr T& operator&=(T& a, T b) { return a = a & b; }                                \
+    constexpr T& operator^=(T& a, T b) { return a = a ^ b; }
 
-typedef WGPUFlags WGPUTextureUsage;
-constexpr WGPUTextureUsage WGPUTextureUsage_None             = 0x00;
-constexpr WGPUTextureUsage WGPUTextureUsage_CopySrc          = 0x01;
-constexpr WGPUTextureUsage WGPUTextureUsage_CopyDst          = 0x02;
-constexpr WGPUTextureUsage WGPUTextureUsage_TextureBinding   = 0x04;
-constexpr WGPUTextureUsage WGPUTextureUsage_StorageBinding   = 0x08;
-constexpr WGPUTextureUsage WGPUTextureUsage_RenderAttachment = 0x10;
-
-typedef WGPUFlags WGPUShaderStage;
-constexpr WGPUShaderStage WGPUShaderStage_None     = 0x0;
-constexpr WGPUShaderStage WGPUShaderStage_Vertex   = 0x1;
-constexpr WGPUShaderStage WGPUShaderStage_Fragment = 0x2;
-constexpr WGPUShaderStage WGPUShaderStage_Compute  = 0x4;
-
-typedef WGPUFlags WGPUColorWriteMask;
-constexpr WGPUColorWriteMask WGPUColorWriteMask_None  = 0x0;
-constexpr WGPUColorWriteMask WGPUColorWriteMask_Red   = 0x1;
-constexpr WGPUColorWriteMask WGPUColorWriteMask_Green = 0x2;
-constexpr WGPUColorWriteMask WGPUColorWriteMask_Blue  = 0x4;
-constexpr WGPUColorWriteMask WGPUColorWriteMask_Alpha = 0x8;
-constexpr WGPUColorWriteMask WGPUColorWriteMask_All   = 0xF;
-
-// ----------------------------------------------------------------------------
-// Enumerations (0 = Undefined / default)
-// ----------------------------------------------------------------------------
-
-enum WGPUSurfaceGetCurrentTextureStatus : uint {
-    WGPUSurfaceGetCurrentTextureStatus_Undefined = 0,
-    WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal = 1,
-    WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal = 2,
-    WGPUSurfaceGetCurrentTextureStatus_Timeout = 3,
-    WGPUSurfaceGetCurrentTextureStatus_Outdated = 4,
-    WGPUSurfaceGetCurrentTextureStatus_Lost = 5,
-    WGPUSurfaceGetCurrentTextureStatus_Error = 6,
+enum class WGPUBufferUsage : WGPUFlags {
+    None = 0x0000,
+    MapRead = 0x0001,
+    MapWrite = 0x0002,
+    CopySrc = 0x0004,
+    CopyDst = 0x0008,
+    Index = 0x0010,
+    Vertex = 0x0020,
+    Uniform = 0x0040,
+    Storage = 0x0080,
+    Indirect = 0x0100,
+    QueryResolve = 0x0200,
 };
+WGPU_DEFINE_FLAG_OPERATORS(WGPUBufferUsage, 0x03FF)
 
-enum WGPUCompositeAlphaMode : uint {
-    WGPUCompositeAlphaMode_Auto = 0,
-    WGPUCompositeAlphaMode_Opaque = 1,
-    WGPUCompositeAlphaMode_Premultiplied = 2,
+enum class WGPUTextureUsage : WGPUFlags {
+    None = 0x00,
+    CopySrc = 0x01,
+    CopyDst = 0x02,
+    TextureBinding = 0x04,
+    StorageBinding = 0x08,
+    RenderAttachment = 0x10,
+    TransientAttachment = 0x20,
 };
+WGPU_DEFINE_FLAG_OPERATORS(WGPUTextureUsage, 0x3F)
 
-enum WGPUPresentMode : uint {
-    WGPUPresentMode_Undefined = 0,
-    WGPUPresentMode_Fifo = 1,
-    WGPUPresentMode_FifoRelaxed = 2,
-    WGPUPresentMode_Immediate = 3,
-    WGPUPresentMode_Mailbox = 4,
+enum class WGPUShaderStage : WGPUFlags {
+    None = 0x0,
+    Vertex = 0x1,
+    Fragment = 0x2,
+    Compute = 0x4,
 };
+WGPU_DEFINE_FLAG_OPERATORS(WGPUShaderStage, 0x7)
 
-enum WGPUTextureFormat : uint {
-    WGPUTextureFormat_Undefined = 0,
-    WGPUTextureFormat_R8Unorm = 1,
-    WGPUTextureFormat_R8Snorm = 2,
-    WGPUTextureFormat_R8Uint = 3,
-    WGPUTextureFormat_R8Sint = 4,
-    WGPUTextureFormat_R16Uint = 5,
-    WGPUTextureFormat_R16Sint = 6,
-    WGPUTextureFormat_R16Float = 7,
-    WGPUTextureFormat_RG8Unorm = 8,
-    WGPUTextureFormat_RG8Snorm = 9,
-    WGPUTextureFormat_RG8Uint = 10,
-    WGPUTextureFormat_RG8Sint = 11,
-    WGPUTextureFormat_R32Float = 12,
-    WGPUTextureFormat_R32Uint = 13,
-    WGPUTextureFormat_R32Sint = 14,
-    WGPUTextureFormat_RG16Uint = 15,
-    WGPUTextureFormat_RG16Sint = 16,
-    WGPUTextureFormat_RG16Float = 17,
-    WGPUTextureFormat_RGBA8Unorm = 18,
-    WGPUTextureFormat_RGBA8UnormSrgb = 19,
-    WGPUTextureFormat_RGBA8Snorm = 20,
-    WGPUTextureFormat_RGBA8Uint = 21,
-    WGPUTextureFormat_RGBA8Sint = 22,
-    WGPUTextureFormat_BGRA8Unorm = 23,
-    WGPUTextureFormat_BGRA8UnormSrgb = 24,
-    WGPUTextureFormat_RGB10A2Uint = 25,
-    WGPUTextureFormat_RGB10A2Unorm = 26,
-    WGPUTextureFormat_RG11B10Ufloat = 27,
-    WGPUTextureFormat_RGB9E5Ufloat = 28,
-    WGPUTextureFormat_RG32Float = 29,
-    WGPUTextureFormat_RG32Uint = 30,
-    WGPUTextureFormat_RG32Sint = 31,
-    WGPUTextureFormat_RGBA16Uint = 32,
-    WGPUTextureFormat_RGBA16Sint = 33,
-    WGPUTextureFormat_RGBA16Float = 34,
-    WGPUTextureFormat_RGBA32Float = 35,
-    WGPUTextureFormat_RGBA32Uint = 36,
-    WGPUTextureFormat_RGBA32Sint = 37,
-    WGPUTextureFormat_Stencil8 = 38,
-    WGPUTextureFormat_Depth16Unorm = 39,
-    WGPUTextureFormat_Depth24Plus = 40,
-    WGPUTextureFormat_Depth24PlusStencil8 = 41,
-    WGPUTextureFormat_Depth32Float = 42,
-    WGPUTextureFormat_Depth32FloatStencil8 = 43,
+enum class WGPUColorWriteMask : WGPUFlags {
+    None = 0x0,
+    Red = 0x1,
+    Green = 0x2,
+    Blue = 0x4,
+    Alpha = 0x8,
+    All = 0xF,
 };
-
-enum WGPUTextureDimension : uint {
-    WGPUTextureDimension_Undefined = 0,
-    WGPUTextureDimension_1D = 1,
-    WGPUTextureDimension_2D = 2,
-    WGPUTextureDimension_3D = 3,
-};
-
-enum WGPUTextureViewDimension : uint {
-    WGPUTextureViewDimension_Undefined = 0,
-    WGPUTextureViewDimension_1D = 1,
-    WGPUTextureViewDimension_2D = 2,
-    WGPUTextureViewDimension_2DArray = 3,
-    WGPUTextureViewDimension_Cube = 4,
-    WGPUTextureViewDimension_CubeArray = 5,
-    WGPUTextureViewDimension_3D = 6,
-};
-
-enum WGPUTextureAspect : uint {
-    WGPUTextureAspect_Undefined = 0,
-    WGPUTextureAspect_All = 1,
-    WGPUTextureAspect_StencilOnly = 2,
-    WGPUTextureAspect_DepthOnly = 3,
-};
-
-enum WGPULoadOp : uint {
-    WGPULoadOp_Undefined = 0,
-    WGPULoadOp_Clear = 1,
-    WGPULoadOp_Load = 2,
-};
-
-enum WGPUStoreOp : uint {
-    WGPUStoreOp_Undefined = 0,
-    WGPUStoreOp_Store = 1,
-    WGPUStoreOp_Discard = 2,
-};
-
-enum WGPUPrimitiveTopology : uint {
-    WGPUPrimitiveTopology_Undefined = 0,
-    WGPUPrimitiveTopology_PointList = 1,
-    WGPUPrimitiveTopology_LineList = 2,
-    WGPUPrimitiveTopology_LineStrip = 3,
-    WGPUPrimitiveTopology_TriangleList = 4,
-    WGPUPrimitiveTopology_TriangleStrip = 5,
-};
-
-enum WGPUIndexFormat : uint {
-    WGPUIndexFormat_Undefined = 0,
-    WGPUIndexFormat_Uint16 = 1,
-    WGPUIndexFormat_Uint32 = 2,
-};
-
-enum WGPUFrontFace : uint {
-    WGPUFrontFace_Undefined = 0,
-    WGPUFrontFace_CCW = 1,
-    WGPUFrontFace_CW = 2,
-};
-
-enum WGPUCullMode : uint {
-    WGPUCullMode_Undefined = 0,
-    WGPUCullMode_None = 1,
-    WGPUCullMode_Front = 2,
-    WGPUCullMode_Back = 3,
-};
-
-enum WGPUCompareFunction : uint {
-    WGPUCompareFunction_Undefined = 0,
-    WGPUCompareFunction_Never = 1,
-    WGPUCompareFunction_Less = 2,
-    WGPUCompareFunction_Equal = 3,
-    WGPUCompareFunction_LessEqual = 4,
-    WGPUCompareFunction_Greater = 5,
-    WGPUCompareFunction_NotEqual = 6,
-    WGPUCompareFunction_GreaterEqual = 7,
-    WGPUCompareFunction_Always = 8,
-};
-
-enum WGPUStencilOperation : uint {
-    WGPUStencilOperation_Undefined = 0,
-    WGPUStencilOperation_Keep = 1,
-    WGPUStencilOperation_Zero = 2,
-    WGPUStencilOperation_Replace = 3,
-    WGPUStencilOperation_Invert = 4,
-    WGPUStencilOperation_IncrementClamp = 5,
-    WGPUStencilOperation_DecrementClamp = 6,
-    WGPUStencilOperation_IncrementWrap = 7,
-    WGPUStencilOperation_DecrementWrap = 8,
-};
-
-enum WGPUBlendFactor : uint {
-    WGPUBlendFactor_Undefined = 0,
-    WGPUBlendFactor_Zero = 1,
-    WGPUBlendFactor_One = 2,
-    WGPUBlendFactor_Src = 3,
-    WGPUBlendFactor_OneMinusSrc = 4,
-    WGPUBlendFactor_SrcAlpha = 5,
-    WGPUBlendFactor_OneMinusSrcAlpha = 6,
-    WGPUBlendFactor_Dst = 7,
-    WGPUBlendFactor_OneMinusDst = 8,
-    WGPUBlendFactor_DstAlpha = 9,
-    WGPUBlendFactor_OneMinusDstAlpha = 10,
-    WGPUBlendFactor_SrcAlphaSaturated = 11,
-    WGPUBlendFactor_Constant = 12,
-    WGPUBlendFactor_OneMinusConstant = 13,
-    WGPUBlendFactor_Src1 = 14,
-    WGPUBlendFactor_OneMinusSrc1 = 15,
-    WGPUBlendFactor_Src1Alpha = 16,
-    WGPUBlendFactor_OneMinusSrc1Alpha = 17,
-};
-
-enum WGPUBlendOperation : uint {
-    WGPUBlendOperation_Undefined = 0,
-    WGPUBlendOperation_Add = 1,
-    WGPUBlendOperation_Subtract = 2,
-    WGPUBlendOperation_ReverseSubtract = 3,
-    WGPUBlendOperation_Min = 4,
-    WGPUBlendOperation_Max = 5,
-};
-
-enum WGPUVertexStepMode : uint {
-    WGPUVertexStepMode_Undefined = 0,
-    WGPUVertexStepMode_Vertex = 1,
-    WGPUVertexStepMode_Instance = 2,
-};
-
-enum WGPUVertexFormat : uint {
-    WGPUVertexFormat_Undefined = 0,
-    WGPUVertexFormat_Uint8 = 1,
-    WGPUVertexFormat_Uint8x2 = 2,
-    WGPUVertexFormat_Uint8x4 = 3,
-    WGPUVertexFormat_Sint8 = 4,
-    WGPUVertexFormat_Sint8x2 = 5,
-    WGPUVertexFormat_Sint8x4 = 6,
-    WGPUVertexFormat_Unorm8 = 7,
-    WGPUVertexFormat_Unorm8x2 = 8,
-    WGPUVertexFormat_Unorm8x4 = 9,
-    WGPUVertexFormat_Snorm8 = 10,
-    WGPUVertexFormat_Snorm8x2 = 11,
-    WGPUVertexFormat_Snorm8x4 = 12,
-    WGPUVertexFormat_Uint16 = 13,
-    WGPUVertexFormat_Uint16x2 = 14,
-    WGPUVertexFormat_Uint16x4 = 15,
-    WGPUVertexFormat_Sint16 = 16,
-    WGPUVertexFormat_Sint16x2 = 17,
-    WGPUVertexFormat_Sint16x4 = 18,
-    WGPUVertexFormat_Unorm16 = 19,
-    WGPUVertexFormat_Unorm16x2 = 20,
-    WGPUVertexFormat_Unorm16x4 = 21,
-    WGPUVertexFormat_Snorm16 = 22,
-    WGPUVertexFormat_Snorm16x2 = 23,
-    WGPUVertexFormat_Snorm16x4 = 24,
-    WGPUVertexFormat_Float16 = 25,
-    WGPUVertexFormat_Float16x2 = 26,
-    WGPUVertexFormat_Float16x4 = 27,
-    WGPUVertexFormat_Float32 = 28,
-    WGPUVertexFormat_Float32x2 = 29,
-    WGPUVertexFormat_Float32x3 = 30,
-    WGPUVertexFormat_Float32x4 = 31,
-    WGPUVertexFormat_Uint32 = 32,
-    WGPUVertexFormat_Uint32x2 = 33,
-    WGPUVertexFormat_Uint32x3 = 34,
-    WGPUVertexFormat_Uint32x4 = 35,
-    WGPUVertexFormat_Sint32 = 36,
-    WGPUVertexFormat_Sint32x2 = 37,
-    WGPUVertexFormat_Sint32x3 = 38,
-    WGPUVertexFormat_Sint32x4 = 39,
-    WGPUVertexFormat_Unorm10_10_10_2 = 40,
-    WGPUVertexFormat_Unorm8x4BGRA = 41,
-};
-
-enum WGPUAddressMode : uint {
-    WGPUAddressMode_Undefined = 0,
-    WGPUAddressMode_ClampToEdge = 1,
-    WGPUAddressMode_Repeat = 2,
-    WGPUAddressMode_MirrorRepeat = 3,
-};
-
-enum WGPUFilterMode : uint {
-    WGPUFilterMode_Undefined = 0,
-    WGPUFilterMode_Nearest = 1,
-    WGPUFilterMode_Linear = 2,
-};
-
-enum WGPUMipmapFilterMode : uint {
-    WGPUMipmapFilterMode_Undefined = 0,
-    WGPUMipmapFilterMode_Nearest = 1,
-    WGPUMipmapFilterMode_Linear = 2,
-};
-
-enum WGPUBufferBindingType : uint {
-    WGPUBufferBindingType_BindingNotUsed = 0,
-    WGPUBufferBindingType_Undefined = 0,
-    WGPUBufferBindingType_Uniform = 1,
-    WGPUBufferBindingType_Storage = 2,
-    WGPUBufferBindingType_ReadOnlyStorage = 3,
-};
-
-enum WGPUSamplerBindingType : uint {
-    WGPUSamplerBindingType_BindingNotUsed = 0,
-    WGPUSamplerBindingType_Undefined = 0,
-    WGPUSamplerBindingType_Filtering = 1,
-    WGPUSamplerBindingType_NonFiltering = 2,
-    WGPUSamplerBindingType_Comparison = 3,
-};
-
-enum WGPUTextureSampleType : uint {
-    WGPUTextureSampleType_BindingNotUsed = 0,
-    WGPUTextureSampleType_Undefined = 0,
-    WGPUTextureSampleType_Float = 1,
-    WGPUTextureSampleType_UnfilterableFloat = 2,
-    WGPUTextureSampleType_Depth = 3,
-    WGPUTextureSampleType_Sint = 4,
-    WGPUTextureSampleType_Uint = 5,
-};
-
-enum WGPUStorageTextureAccess : uint {
-    WGPUStorageTextureAccess_BindingNotUsed = 0,
-    WGPUStorageTextureAccess_Undefined = 0,
-    WGPUStorageTextureAccess_WriteOnly = 1,
-    WGPUStorageTextureAccess_ReadOnly = 2,
-    WGPUStorageTextureAccess_ReadWrite = 3,
-};
+WGPU_DEFINE_FLAG_OPERATORS(WGPUColorWriteMask, 0xF)
+#undef WGPU_DEFINE_FLAG_OPERATORS
 
 // ----------------------------------------------------------------------------
 // Value Types & Descriptors (camelCase fields matching webgpu.h)
@@ -483,30 +633,32 @@ static_assert(__builtin_offsetof(WGPUExtent3D, width) == 0);
 static_assert(__builtin_offsetof(WGPUExtent3D, height) == 4);
 static_assert(__builtin_offsetof(WGPUExtent3D, depthOrArrayLayers) == 8);
 
+// width/height/presentMode are accepted for layout compatibility but ignored: the
+// host page owns the canvas size and the browser always presents with vsync.
 struct WGPUSurfaceConfiguration {
     const WGPUChainedStruct* nextInChain;
     WGPUDevice device;
     WGPUTextureFormat format;
-    WGPUTextureUsage usage = WGPUTextureUsage_RenderAttachment;
-    usz viewFormatCount;
-    const WGPUTextureFormat* viewFormats;
-    WGPUCompositeAlphaMode alphaMode = WGPUCompositeAlphaMode_Opaque;
+    WGPUTextureUsage usage = WGPUTextureUsage::RenderAttachment;
     uint width;
     uint height;
-    WGPUPresentMode presentMode = WGPUPresentMode_Fifo;
+    usz viewFormatCount;
+    const WGPUTextureFormat* viewFormats;
+    WGPUCompositeAlphaMode alphaMode = WGPUCompositeAlphaMode::Auto;
+    WGPUPresentMode presentMode = WGPUPresentMode::Undefined;
 };
 
-static_assert(sizeof(WGPUSurfaceConfiguration) == 40);
+static_assert(sizeof(WGPUSurfaceConfiguration) == 48);
 static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, device) == 4);
 static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, format) == 8);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, usage) == 12);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, viewFormatCount) == 16);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, viewFormats) == 20);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, alphaMode) == 24);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, width) == 28);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, height) == 32);
-static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, presentMode) == 36);
+static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, usage) == 16);
+static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, width) == 24);
+static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, height) == 28);
+static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, viewFormatCount) == 32);
+static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, viewFormats) == 36);
+static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, alphaMode) == 40);
+static_assert(__builtin_offsetof(WGPUSurfaceConfiguration, presentMode) == 44);
 
 struct WGPUSurfaceTexture {
     const WGPUChainedStruct* nextInChain;
@@ -524,22 +676,21 @@ struct WGPUBufferDescriptor {
     WGPUStringView label;
     WGPUBufferUsage usage;
     ulong size;
-    WGPUBool mappedAtCreation;
-    uint _pad0;
+    WGPUBool mappedAtCreation; // unsupported: wgpuDeviceCreateBuffer traps if set (no buffer mapping yet)
 };
 
-static_assert(sizeof(WGPUBufferDescriptor) == 32);
+static_assert(sizeof(WGPUBufferDescriptor) == 40);
 static_assert(__builtin_offsetof(WGPUBufferDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUBufferDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUBufferDescriptor, usage) == 12);
-static_assert(__builtin_offsetof(WGPUBufferDescriptor, size) == 16);
-static_assert(__builtin_offsetof(WGPUBufferDescriptor, mappedAtCreation) == 24);
+static_assert(__builtin_offsetof(WGPUBufferDescriptor, usage) == 16);
+static_assert(__builtin_offsetof(WGPUBufferDescriptor, size) == 24);
+static_assert(__builtin_offsetof(WGPUBufferDescriptor, mappedAtCreation) == 32);
 
 struct WGPUTextureDescriptor {
     const WGPUChainedStruct* nextInChain;
     WGPUStringView label;
     WGPUTextureUsage usage;
-    WGPUTextureDimension dimension = WGPUTextureDimension_2D;
+    WGPUTextureDimension dimension = WGPUTextureDimension::D2;
     WGPUExtent3D size;
     WGPUTextureFormat format;
     uint mipLevelCount = 1;
@@ -548,17 +699,17 @@ struct WGPUTextureDescriptor {
     const WGPUTextureFormat* viewFormats;
 };
 
-static_assert(sizeof(WGPUTextureDescriptor) == 52);
+static_assert(sizeof(WGPUTextureDescriptor) == 64);
 static_assert(__builtin_offsetof(WGPUTextureDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUTextureDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, usage) == 12);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, dimension) == 16);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, size) == 20);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, format) == 32);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, mipLevelCount) == 36);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, sampleCount) == 40);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, viewFormatCount) == 44);
-static_assert(__builtin_offsetof(WGPUTextureDescriptor, viewFormats) == 48);
+static_assert(__builtin_offsetof(WGPUTextureDescriptor, usage) == 16);
+static_assert(__builtin_offsetof(WGPUTextureDescriptor, dimension) == 24);
+static_assert(__builtin_offsetof(WGPUTextureDescriptor, size) == 28);
+static_assert(__builtin_offsetof(WGPUTextureDescriptor, format) == 40);
+static_assert(__builtin_offsetof(WGPUTextureDescriptor, mipLevelCount) == 44);
+static_assert(__builtin_offsetof(WGPUTextureDescriptor, sampleCount) == 48);
+static_assert(__builtin_offsetof(WGPUTextureDescriptor, viewFormatCount) == 52);
+static_assert(__builtin_offsetof(WGPUTextureDescriptor, viewFormats) == 56);
 
 struct WGPUTextureViewDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -569,11 +720,11 @@ struct WGPUTextureViewDescriptor {
     uint mipLevelCount = WGPU_MIP_LEVEL_COUNT_UNDEFINED;
     uint baseArrayLayer;
     uint arrayLayerCount = WGPU_ARRAY_LAYER_COUNT_UNDEFINED;
-    WGPUTextureAspect aspect = WGPUTextureAspect_All;
+    WGPUTextureAspect aspect = WGPUTextureAspect::Undefined;
     WGPUTextureUsage usage;
 };
 
-static_assert(sizeof(WGPUTextureViewDescriptor) == 44);
+static_assert(sizeof(WGPUTextureViewDescriptor) == 48);
 static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, label) == 4);
 static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, format) == 12);
@@ -588,17 +739,16 @@ static_assert(__builtin_offsetof(WGPUTextureViewDescriptor, usage) == 40);
 struct WGPUSamplerDescriptor {
     const WGPUChainedStruct* nextInChain;
     WGPUStringView label;
-    WGPUAddressMode addressModeU = WGPUAddressMode_ClampToEdge;
-    WGPUAddressMode addressModeV = WGPUAddressMode_ClampToEdge;
-    WGPUAddressMode addressModeW = WGPUAddressMode_ClampToEdge;
-    WGPUFilterMode magFilter = WGPUFilterMode_Nearest;
-    WGPUFilterMode minFilter = WGPUFilterMode_Nearest;
-    WGPUMipmapFilterMode mipmapFilter = WGPUMipmapFilterMode_Nearest;
+    WGPUAddressMode addressModeU = WGPUAddressMode::ClampToEdge;
+    WGPUAddressMode addressModeV = WGPUAddressMode::ClampToEdge;
+    WGPUAddressMode addressModeW = WGPUAddressMode::ClampToEdge;
+    WGPUFilterMode magFilter = WGPUFilterMode::Nearest;
+    WGPUFilterMode minFilter = WGPUFilterMode::Nearest;
+    WGPUMipmapFilterMode mipmapFilter = WGPUMipmapFilterMode::Nearest;
     float lodMinClamp = 0.0f;
     float lodMaxClamp = 32.0f;
-    WGPUCompareFunction compare = WGPUCompareFunction_Undefined;
+    WGPUCompareFunction compare = WGPUCompareFunction::Undefined;
     ushort maxAnisotropy = 1;
-    ushort _pad0;
 };
 
 static_assert(sizeof(WGPUSamplerDescriptor) == 52);
@@ -615,24 +765,20 @@ static_assert(__builtin_offsetof(WGPUSamplerDescriptor, lodMaxClamp) == 40);
 static_assert(__builtin_offsetof(WGPUSamplerDescriptor, compare) == 44);
 static_assert(__builtin_offsetof(WGPUSamplerDescriptor, maxAnisotropy) == 48);
 
-// Supports both standard `nextInChain` (pointing to WGPUShaderSourceWGSL)
-// and direct `.code` initialization for convenience.
+// Source is supplied by chaining a WGPUShaderSourceWGSL through nextInChain.
 struct WGPUShaderModuleDescriptor {
     const WGPUChainedStruct* nextInChain;
     WGPUStringView label;
-    WGPUStringView code;
 };
 
-static_assert(sizeof(WGPUShaderModuleDescriptor) == 20);
+static_assert(sizeof(WGPUShaderModuleDescriptor) == 12);
 static_assert(__builtin_offsetof(WGPUShaderModuleDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUShaderModuleDescriptor, label) == 4);
-static_assert(__builtin_offsetof(WGPUShaderModuleDescriptor, code) == 12);
 
 struct WGPUBufferBindingLayout {
     const WGPUChainedStruct* nextInChain;
     WGPUBufferBindingType type;
     WGPUBool hasDynamicOffset;
-    uint _pad0;
     ulong minBindingSize;
 };
 
@@ -681,21 +827,22 @@ struct WGPUBindGroupLayoutEntry {
     const WGPUChainedStruct* nextInChain;
     uint binding;
     WGPUShaderStage visibility;
-    uint _pad0;
+    uint bindingArraySize; // unsupported by browsers; must be 0
     WGPUBufferBindingLayout buffer;
     WGPUSamplerBindingLayout sampler;
     WGPUTextureBindingLayout texture;
     WGPUStorageTextureBindingLayout storageTexture;
 };
 
-static_assert(sizeof(WGPUBindGroupLayoutEntry) == 80);
+static_assert(sizeof(WGPUBindGroupLayoutEntry) == 88);
 static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, binding) == 4);
 static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, visibility) == 8);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, buffer) == 16);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, sampler) == 40);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, texture) == 48);
-static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, storageTexture) == 64);
+static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, bindingArraySize) == 16);
+static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, buffer) == 24);
+static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, sampler) == 48);
+static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, texture) == 56);
+static_assert(__builtin_offsetof(WGPUBindGroupLayoutEntry, storageTexture) == 72);
 
 struct WGPUBindGroupLayoutDescriptor {
     const WGPUChainedStruct* nextInChain;
@@ -714,7 +861,6 @@ struct WGPUBindGroupEntry {
     const WGPUChainedStruct* nextInChain;
     uint binding;
     WGPUBuffer buffer;
-    uint _pad0;
     ulong offset;
     ulong size = WGPU_WHOLE_SIZE;
     WGPUSampler sampler;
@@ -750,20 +896,21 @@ struct WGPUPipelineLayoutDescriptor {
     WGPUStringView label;
     usz bindGroupLayoutCount;
     const WGPUBindGroupLayout* bindGroupLayouts;
+    uint immediateSize; // unsupported by browsers; must be 0
 };
 
-static_assert(sizeof(WGPUPipelineLayoutDescriptor) == 20);
+static_assert(sizeof(WGPUPipelineLayoutDescriptor) == 24);
 static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, label) == 4);
 static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, bindGroupLayoutCount) == 12);
 static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, bindGroupLayouts) == 16);
+static_assert(__builtin_offsetof(WGPUPipelineLayoutDescriptor, immediateSize) == 20);
 
 struct WGPUVertexAttribute {
     const WGPUChainedStruct* nextInChain;
     WGPUVertexFormat format;
     ulong offset;
     uint shaderLocation;
-    uint _pad0;
 };
 
 static_assert(sizeof(WGPUVertexAttribute) == 24);
@@ -774,7 +921,7 @@ static_assert(__builtin_offsetof(WGPUVertexAttribute, shaderLocation) == 16);
 
 struct WGPUVertexBufferLayout {
     const WGPUChainedStruct* nextInChain;
-    WGPUVertexStepMode stepMode = WGPUVertexStepMode_Vertex;
+    WGPUVertexStepMode stepMode = WGPUVertexStepMode::Vertex;
     ulong arrayStride;
     usz attributeCount;
     const WGPUVertexAttribute* attributes;
@@ -792,6 +939,7 @@ struct WGPUConstantEntry {
     WGPUStringView key;
     double value;
 };
+
 static_assert(sizeof(WGPUConstantEntry) == 24);
 static_assert(__builtin_offsetof(WGPUConstantEntry, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUConstantEntry, key) == 4);
@@ -818,10 +966,10 @@ static_assert(__builtin_offsetof(WGPUVertexState, buffers) == 28);
 
 struct WGPUPrimitiveState {
     const WGPUChainedStruct* nextInChain;
-    WGPUPrimitiveTopology topology = WGPUPrimitiveTopology_TriangleList;
-    WGPUIndexFormat stripIndexFormat = WGPUIndexFormat_Undefined;
-    WGPUFrontFace frontFace = WGPUFrontFace_CCW;
-    WGPUCullMode cullMode = WGPUCullMode_None;
+    WGPUPrimitiveTopology topology = WGPUPrimitiveTopology::TriangleList;
+    WGPUIndexFormat stripIndexFormat = WGPUIndexFormat::Undefined;
+    WGPUFrontFace frontFace = WGPUFrontFace::CCW;
+    WGPUCullMode cullMode = WGPUCullMode::None;
     WGPUBool unclippedDepth = WGPU_FALSE;
 };
 
@@ -834,10 +982,10 @@ static_assert(__builtin_offsetof(WGPUPrimitiveState, cullMode) == 16);
 static_assert(__builtin_offsetof(WGPUPrimitiveState, unclippedDepth) == 20);
 
 struct WGPUStencilFaceState {
-    WGPUCompareFunction compare = WGPUCompareFunction_Always;
-    WGPUStencilOperation failOp = WGPUStencilOperation_Keep;
-    WGPUStencilOperation depthFailOp = WGPUStencilOperation_Keep;
-    WGPUStencilOperation passOp = WGPUStencilOperation_Keep;
+    WGPUCompareFunction compare = WGPUCompareFunction::Always;
+    WGPUStencilOperation failOp = WGPUStencilOperation::Keep;
+    WGPUStencilOperation depthFailOp = WGPUStencilOperation::Keep;
+    WGPUStencilOperation passOp = WGPUStencilOperation::Keep;
 };
 
 static_assert(sizeof(WGPUStencilFaceState) == 16);
@@ -849,8 +997,8 @@ static_assert(__builtin_offsetof(WGPUStencilFaceState, passOp) == 12);
 struct WGPUDepthStencilState {
     const WGPUChainedStruct* nextInChain;
     WGPUTextureFormat format;
-    WGPUBool depthWriteEnabled;
-    WGPUCompareFunction depthCompare = WGPUCompareFunction_Always;
+    WGPUOptionalBool depthWriteEnabled = WGPUOptionalBool::Undefined;
+    WGPUCompareFunction depthCompare = WGPUCompareFunction::Undefined;
     WGPUStencilFaceState stencilFront;
     WGPUStencilFaceState stencilBack;
     uint stencilReadMask = 0xFFFFFFFFu;
@@ -879,6 +1027,7 @@ struct WGPUMultisampleState {
     uint mask = 0xFFFFFFFFu;
     WGPUBool alphaToCoverageEnabled = WGPU_FALSE;
 };
+
 static_assert(sizeof(WGPUMultisampleState) == 16);
 static_assert(__builtin_offsetof(WGPUMultisampleState, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUMultisampleState, count) == 4);
@@ -886,9 +1035,9 @@ static_assert(__builtin_offsetof(WGPUMultisampleState, mask) == 8);
 static_assert(__builtin_offsetof(WGPUMultisampleState, alphaToCoverageEnabled) == 12);
 
 struct WGPUBlendComponent {
-    WGPUBlendOperation operation = WGPUBlendOperation_Add;
-    WGPUBlendFactor srcFactor = WGPUBlendFactor_One;
-    WGPUBlendFactor dstFactor = WGPUBlendFactor_Zero;
+    WGPUBlendOperation operation = WGPUBlendOperation::Add;
+    WGPUBlendFactor srcFactor = WGPUBlendFactor::One;
+    WGPUBlendFactor dstFactor = WGPUBlendFactor::Zero;
 };
 
 static_assert(sizeof(WGPUBlendComponent) == 12);
@@ -909,14 +1058,14 @@ struct WGPUColorTargetState {
     const WGPUChainedStruct* nextInChain;
     WGPUTextureFormat format;
     const WGPUBlendState* blend;
-    WGPUColorWriteMask writeMask = WGPUColorWriteMask_All;
+    WGPUColorWriteMask writeMask = WGPUColorWriteMask::All;
 };
 
-static_assert(sizeof(WGPUColorTargetState) == 16);
+static_assert(sizeof(WGPUColorTargetState) == 24);
 static_assert(__builtin_offsetof(WGPUColorTargetState, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUColorTargetState, format) == 4);
 static_assert(__builtin_offsetof(WGPUColorTargetState, blend) == 8);
-static_assert(__builtin_offsetof(WGPUColorTargetState, writeMask) == 12);
+static_assert(__builtin_offsetof(WGPUColorTargetState, writeMask) == 16);
 
 struct WGPUFragmentState {
     const WGPUChainedStruct* nextInChain;
@@ -958,7 +1107,7 @@ static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, depthStencil) == 
 static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, multisample) == 76);
 static_assert(__builtin_offsetof(WGPURenderPipelineDescriptor, fragment) == 92);
 
-struct WGPUProgrammableStageDescriptor {
+struct WGPUComputeState {
     const WGPUChainedStruct* nextInChain;
     WGPUShaderModule module;
     WGPUStringView entryPoint;
@@ -966,18 +1115,18 @@ struct WGPUProgrammableStageDescriptor {
     const WGPUConstantEntry* constants;
 };
 
-static_assert(sizeof(WGPUProgrammableStageDescriptor) == 24);
-static_assert(__builtin_offsetof(WGPUProgrammableStageDescriptor, nextInChain) == 0);
-static_assert(__builtin_offsetof(WGPUProgrammableStageDescriptor, module) == 4);
-static_assert(__builtin_offsetof(WGPUProgrammableStageDescriptor, entryPoint) == 8);
-static_assert(__builtin_offsetof(WGPUProgrammableStageDescriptor, constantCount) == 16);
-static_assert(__builtin_offsetof(WGPUProgrammableStageDescriptor, constants) == 20);
+static_assert(sizeof(WGPUComputeState) == 24);
+static_assert(__builtin_offsetof(WGPUComputeState, nextInChain) == 0);
+static_assert(__builtin_offsetof(WGPUComputeState, module) == 4);
+static_assert(__builtin_offsetof(WGPUComputeState, entryPoint) == 8);
+static_assert(__builtin_offsetof(WGPUComputeState, constantCount) == 16);
+static_assert(__builtin_offsetof(WGPUComputeState, constants) == 20);
 
 struct WGPUComputePipelineDescriptor {
     const WGPUChainedStruct* nextInChain;
     WGPUStringView label;
     WGPUPipelineLayout layout; // {0} means "auto"
-    WGPUProgrammableStageDescriptor compute;
+    WGPUComputeState compute;
 };
 
 static_assert(sizeof(WGPUComputePipelineDescriptor) == 40);
@@ -1004,6 +1153,19 @@ static_assert(sizeof(WGPUCommandBufferDescriptor) == 12);
 static_assert(__builtin_offsetof(WGPUCommandBufferDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUCommandBufferDescriptor, label) == 4);
 
+struct WGPUPassTimestampWrites {
+    const WGPUChainedStruct* nextInChain;
+    WGPUQuerySet querySet;
+    uint beginningOfPassWriteIndex = WGPU_QUERY_SET_INDEX_UNDEFINED;
+    uint endOfPassWriteIndex = WGPU_QUERY_SET_INDEX_UNDEFINED;
+};
+
+static_assert(sizeof(WGPUPassTimestampWrites) == 16);
+static_assert(__builtin_offsetof(WGPUPassTimestampWrites, nextInChain) == 0);
+static_assert(__builtin_offsetof(WGPUPassTimestampWrites, querySet) == 4);
+static_assert(__builtin_offsetof(WGPUPassTimestampWrites, beginningOfPassWriteIndex) == 8);
+static_assert(__builtin_offsetof(WGPUPassTimestampWrites, endOfPassWriteIndex) == 12);
+
 struct WGPURenderPassColorAttachment {
     const WGPUChainedStruct* nextInChain;
     WGPUTextureView view;
@@ -1028,7 +1190,7 @@ struct WGPURenderPassDepthStencilAttachment {
     WGPUTextureView view;
     WGPULoadOp depthLoadOp;
     WGPUStoreOp depthStoreOp;
-    float depthClearValue;
+    float depthClearValue = WGPU_DEPTH_CLEAR_VALUE_UNDEFINED;
     WGPUBool depthReadOnly;
     WGPULoadOp stencilLoadOp;
     WGPUStoreOp stencilStoreOp;
@@ -1054,28 +1216,34 @@ struct WGPURenderPassDescriptor {
     usz colorAttachmentCount;
     const WGPURenderPassColorAttachment* colorAttachments;
     const WGPURenderPassDepthStencilAttachment* depthStencilAttachment;
+    WGPUQuerySet occlusionQuerySet;                // unsupported: must be null
+    const WGPUPassTimestampWrites* timestampWrites; // unsupported: must be null
 };
 
-static_assert(sizeof(WGPURenderPassDescriptor) == 24);
+static_assert(sizeof(WGPURenderPassDescriptor) == 32);
 static_assert(__builtin_offsetof(WGPURenderPassDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPURenderPassDescriptor, label) == 4);
 static_assert(__builtin_offsetof(WGPURenderPassDescriptor, colorAttachmentCount) == 12);
 static_assert(__builtin_offsetof(WGPURenderPassDescriptor, colorAttachments) == 16);
 static_assert(__builtin_offsetof(WGPURenderPassDescriptor, depthStencilAttachment) == 20);
+static_assert(__builtin_offsetof(WGPURenderPassDescriptor, occlusionQuerySet) == 24);
+static_assert(__builtin_offsetof(WGPURenderPassDescriptor, timestampWrites) == 28);
 
 struct WGPUComputePassDescriptor {
     const WGPUChainedStruct* nextInChain;
     WGPUStringView label;
+    const WGPUPassTimestampWrites* timestampWrites; // unsupported: must be null
 };
 
-static_assert(sizeof(WGPUComputePassDescriptor) == 12);
+static_assert(sizeof(WGPUComputePassDescriptor) == 16);
 static_assert(__builtin_offsetof(WGPUComputePassDescriptor, nextInChain) == 0);
 static_assert(__builtin_offsetof(WGPUComputePassDescriptor, label) == 4);
+static_assert(__builtin_offsetof(WGPUComputePassDescriptor, timestampWrites) == 12);
 
 struct WGPUTexelCopyBufferLayout {
     ulong offset;
-    uint bytesPerRow;
-    uint rowsPerImage;
+    uint bytesPerRow = WGPU_COPY_STRIDE_UNDEFINED;
+    uint rowsPerImage = WGPU_COPY_STRIDE_UNDEFINED;
 };
 
 static_assert(sizeof(WGPUTexelCopyBufferLayout) == 16);
@@ -1086,7 +1254,6 @@ static_assert(__builtin_offsetof(WGPUTexelCopyBufferLayout, rowsPerImage) == 12)
 struct WGPUTexelCopyBufferInfo {
     WGPUTexelCopyBufferLayout layout;
     WGPUBuffer buffer;
-    uint _pad0;
 };
 
 static_assert(sizeof(WGPUTexelCopyBufferInfo) == 24);
@@ -1097,7 +1264,7 @@ struct WGPUTexelCopyTextureInfo {
     WGPUTexture texture;
     uint mipLevel;
     WGPUOrigin3D origin;
-    WGPUTextureAspect aspect = WGPUTextureAspect_All;
+    WGPUTextureAspect aspect = WGPUTextureAspect::All;
 };
 
 static_assert(sizeof(WGPUTexelCopyTextureInfo) == 24);
@@ -1134,11 +1301,19 @@ GPU(wgpuSurfacePresent) void wgpuSurfacePresent(
     WGPUSurface surface
 );
 
+GPU(wgpuSurfaceAddRef) void wgpuSurfaceAddRef(
+    WGPUSurface surface
+);
+
 GPU(wgpuSurfaceRelease) void wgpuSurfaceRelease(
     WGPUSurface surface
 );
 
 // WGPUAdapter
+GPU(wgpuAdapterAddRef) void wgpuAdapterAddRef(
+    WGPUAdapter adapter
+);
+
 GPU(wgpuAdapterRelease) void wgpuAdapterRelease(
     WGPUAdapter adapter
 );
@@ -1202,12 +1377,20 @@ GPU(wgpuDeviceDestroy) void wgpuDeviceDestroy(
     WGPUDevice device
 );
 
+GPU(wgpuDeviceAddRef) void wgpuDeviceAddRef(
+    WGPUDevice device
+);
+
 GPU(wgpuDeviceRelease) void wgpuDeviceRelease(
     WGPUDevice device
 );
 
 // WGPUBuffer
 GPU(wgpuBufferDestroy) void wgpuBufferDestroy(
+    WGPUBuffer buffer
+);
+
+GPU(wgpuBufferAddRef) void wgpuBufferAddRef(
     WGPUBuffer buffer
 );
 
@@ -1225,30 +1408,58 @@ GPU(wgpuTextureDestroy) void wgpuTextureDestroy(
     WGPUTexture texture
 );
 
+GPU(wgpuTextureAddRef) void wgpuTextureAddRef(
+    WGPUTexture texture
+);
+
 GPU(wgpuTextureRelease) void wgpuTextureRelease(
     WGPUTexture texture
 );
 
 // WGPUTextureView
+GPU(wgpuTextureViewAddRef) void wgpuTextureViewAddRef(
+    WGPUTextureView textureView
+);
+
 GPU(wgpuTextureViewRelease) void wgpuTextureViewRelease(
     WGPUTextureView textureView
 );
 
 // WGPUSampler / WGPUBindGroupLayout / WGPUBindGroup / WGPUPipelineLayout / WGPUShaderModule
+GPU(wgpuSamplerAddRef) void wgpuSamplerAddRef(
+    WGPUSampler sampler
+);
+
 GPU(wgpuSamplerRelease) void wgpuSamplerRelease(
     WGPUSampler sampler
+);
+
+GPU(wgpuBindGroupLayoutAddRef) void wgpuBindGroupLayoutAddRef(
+    WGPUBindGroupLayout bindGroupLayout
 );
 
 GPU(wgpuBindGroupLayoutRelease) void wgpuBindGroupLayoutRelease(
     WGPUBindGroupLayout bindGroupLayout
 );
 
+GPU(wgpuBindGroupAddRef) void wgpuBindGroupAddRef(
+    WGPUBindGroup bindGroup
+);
+
 GPU(wgpuBindGroupRelease) void wgpuBindGroupRelease(
     WGPUBindGroup bindGroup
 );
 
+GPU(wgpuPipelineLayoutAddRef) void wgpuPipelineLayoutAddRef(
+    WGPUPipelineLayout pipelineLayout
+);
+
 GPU(wgpuPipelineLayoutRelease) void wgpuPipelineLayoutRelease(
     WGPUPipelineLayout pipelineLayout
+);
+
+GPU(wgpuShaderModuleAddRef) void wgpuShaderModuleAddRef(
+    WGPUShaderModule shaderModule
 );
 
 GPU(wgpuShaderModuleRelease) void wgpuShaderModuleRelease(
@@ -1261,6 +1472,10 @@ GPU(wgpuRenderPipelineGetBindGroupLayout) WGPUBindGroupLayout wgpuRenderPipeline
     uint groupIndex
 );
 
+GPU(wgpuRenderPipelineAddRef) void wgpuRenderPipelineAddRef(
+    WGPURenderPipeline renderPipeline
+);
+
 GPU(wgpuRenderPipelineRelease) void wgpuRenderPipelineRelease(
     WGPURenderPipeline renderPipeline
 );
@@ -1268,6 +1483,10 @@ GPU(wgpuRenderPipelineRelease) void wgpuRenderPipelineRelease(
 GPU(wgpuComputePipelineGetBindGroupLayout) WGPUBindGroupLayout wgpuComputePipelineGetBindGroupLayout(
     WGPUComputePipeline pipeline,
     uint groupIndex
+);
+
+GPU(wgpuComputePipelineAddRef) void wgpuComputePipelineAddRef(
+    WGPUComputePipeline computePipeline
 );
 
 GPU(wgpuComputePipelineRelease) void wgpuComputePipelineRelease(
@@ -1325,6 +1544,10 @@ GPU(wgpuCommandEncoderClearBuffer) void wgpuCommandEncoderClearBuffer(
 GPU(wgpuCommandEncoderFinish) WGPUCommandBuffer wgpuCommandEncoderFinish(
     WGPUCommandEncoder commandEncoder,
     const WGPUCommandBufferDescriptor* descriptor = nullptr
+);
+
+GPU(wgpuCommandEncoderAddRef) void wgpuCommandEncoderAddRef(
+    WGPUCommandEncoder commandEncoder
 );
 
 GPU(wgpuCommandEncoderRelease) void wgpuCommandEncoderRelease(
@@ -1410,6 +1633,10 @@ GPU(wgpuRenderPassEncoderEnd) void wgpuRenderPassEncoderEnd(
     WGPURenderPassEncoder renderPassEncoder
 );
 
+GPU(wgpuRenderPassEncoderAddRef) void wgpuRenderPassEncoderAddRef(
+    WGPURenderPassEncoder renderPassEncoder
+);
+
 GPU(wgpuRenderPassEncoderRelease) void wgpuRenderPassEncoderRelease(
     WGPURenderPassEncoder renderPassEncoder
 );
@@ -1439,11 +1666,19 @@ GPU(wgpuComputePassEncoderEnd) void wgpuComputePassEncoderEnd(
     WGPUComputePassEncoder computePassEncoder
 );
 
+GPU(wgpuComputePassEncoderAddRef) void wgpuComputePassEncoderAddRef(
+    WGPUComputePassEncoder computePassEncoder
+);
+
 GPU(wgpuComputePassEncoderRelease) void wgpuComputePassEncoderRelease(
     WGPUComputePassEncoder computePassEncoder
 );
 
 // WGPUCommandBuffer
+GPU(wgpuCommandBufferAddRef) void wgpuCommandBufferAddRef(
+    WGPUCommandBuffer commandBuffer
+);
+
 GPU(wgpuCommandBufferRelease) void wgpuCommandBufferRelease(
     WGPUCommandBuffer commandBuffer
 );
@@ -1470,6 +1705,10 @@ GPU(wgpuQueueWriteTexture) void wgpuQueueWriteTexture(
     usz dataSize,
     const WGPUTexelCopyBufferLayout* dataLayout,
     const WGPUExtent3D* writeSize
+);
+
+GPU(wgpuQueueAddRef) void wgpuQueueAddRef(
+    WGPUQueue queue
 );
 
 GPU(wgpuQueueRelease) void wgpuQueueRelease(
