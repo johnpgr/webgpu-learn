@@ -38,8 +38,7 @@
 //
 // Differences from the official header:
 // - Only the functions and descriptors declared here exist. Error scopes, query
-//   sets, render bundles, buffer mapping, adapter info and feature enumeration
-//   are not implemented.
+//   sets, render bundles and buffer mapping are not implemented.
 // - Not implemented, and rejected at runtime instead of being ignored (the JS
 //   host throws, which traps wasm): WGPUBufferDescriptor::mappedAtCreation,
 //   WGPUBindGroupLayoutEntry::bindingArraySize, WGPUPipelineLayoutDescriptor::
@@ -220,6 +219,13 @@ enum class WGPUBackendType : uint {
     Vulkan = 6,
     OpenGL = 7,
     OpenGLES = 8,
+};
+
+enum class WGPUAdapterType : uint {
+    DiscreteGPU = 1,
+    IntegratedGPU = 2,
+    CPU = 3,
+    Unknown = 4,
 };
 
 enum class WGPUInstanceFeatureName : uint {
@@ -1584,6 +1590,48 @@ static_assert(OFFSET_OF(WGPULimits, maxVertexAttributes) == 104);
 static_assert(OFFSET_OF(WGPULimits, maxComputeWorkgroupsPerDimension) == 144);
 static_assert(OFFSET_OF(WGPULimits, maxImmediateSize) == 148);
 
+// Filled by wgpuAdapterGetFeatures / wgpuDeviceGetFeatures. The array is owned by
+// the JS host, cached per adapter/device and valid for the program's life; still
+// call wgpuSupportedFeaturesFreeMembers, as portable code must.
+struct WGPUSupportedFeatures {
+    usz featureCount;
+    const WGPUFeatureName* features;
+};
+
+static_assert(sizeof(WGPUSupportedFeatures) == 8);
+static_assert(OFFSET_OF(WGPUSupportedFeatures, featureCount) == 0);
+static_assert(OFFSET_OF(WGPUSupportedFeatures, features) == 4);
+
+// Filled by wgpuAdapterGetInfo / wgpuDeviceGetAdapterInfo. The strings are owned
+// by the JS host, cached per GPUAdapterInfo and valid for the program's life;
+// still call wgpuAdapterInfoFreeMembers, as portable code must.
+struct WGPUAdapterInfo {
+    WGPUChainedStruct* nextInChain;
+    WGPUStringView vendor;
+    WGPUStringView architecture;
+    WGPUStringView device;
+    WGPUStringView description;
+    WGPUBackendType backendType;
+    WGPUAdapterType adapterType;
+    uint vendorID;
+    uint deviceID;
+    uint subgroupMinSize;
+    uint subgroupMaxSize;
+};
+
+static_assert(sizeof(WGPUAdapterInfo) == 60);
+static_assert(OFFSET_OF(WGPUAdapterInfo, nextInChain) == 0);
+static_assert(OFFSET_OF(WGPUAdapterInfo, vendor) == 4);
+static_assert(OFFSET_OF(WGPUAdapterInfo, architecture) == 12);
+static_assert(OFFSET_OF(WGPUAdapterInfo, device) == 20);
+static_assert(OFFSET_OF(WGPUAdapterInfo, description) == 28);
+static_assert(OFFSET_OF(WGPUAdapterInfo, backendType) == 36);
+static_assert(OFFSET_OF(WGPUAdapterInfo, adapterType) == 40);
+static_assert(OFFSET_OF(WGPUAdapterInfo, vendorID) == 44);
+static_assert(OFFSET_OF(WGPUAdapterInfo, deviceID) == 48);
+static_assert(OFFSET_OF(WGPUAdapterInfo, subgroupMinSize) == 52);
+static_assert(OFFSET_OF(WGPUAdapterInfo, subgroupMaxSize) == 56);
+
 struct WGPUQueueDescriptor {
     const WGPUChainedStruct* nextInChain;
     WGPUStringView label;
@@ -1659,8 +1707,8 @@ static_assert(OFFSET_OF(WGPUSurfaceCapabilities, alphaModeCount) == 32);
 static_assert(OFFSET_OF(WGPUSurfaceCapabilities, alphaModes) == 36);
 
 // Called by the JS host (not by your code) when it must place data in wasm memory:
-// strings passed to callbacks and the surface capability arrays. Bump-allocated
-// and never freed; the host allocates a fixed amount once and reuses it.
+// callback strings, surface capability arrays, features and adapter info strings.
+// Bump-allocated and never freed; the host caches allocations and reuses them.
 EXPORT(wgpu_host_alloc) __attribute__((used)) inline void* wgpu_host_alloc(usz size) {
     return os_reserve(size);
 }
@@ -1753,6 +1801,29 @@ GPU(wgpuSurfaceRelease) void wgpuSurfaceRelease(
 );
 
 // WGPUAdapter
+GPU(wgpuAdapterGetFeatures) void wgpuAdapterGetFeatures(
+    WGPUAdapter adapter,
+    WGPUSupportedFeatures* features
+);
+
+GPU(wgpuAdapterHasFeature) WGPUBool wgpuAdapterHasFeature(
+    WGPUAdapter adapter,
+    WGPUFeatureName feature
+);
+
+GPU(wgpuAdapterGetInfo) WGPUStatus wgpuAdapterGetInfo(
+    WGPUAdapter adapter,
+    WGPUAdapterInfo* info
+);
+
+GPU(wgpuSupportedFeaturesFreeMembers) void wgpuSupportedFeaturesFreeMembers(
+    WGPUSupportedFeatures features
+);
+
+GPU(wgpuAdapterInfoFreeMembers) void wgpuAdapterInfoFreeMembers(
+    WGPUAdapterInfo adapterInfo
+);
+
 GPU(wgpuAdapterGetLimits) WGPUStatus wgpuAdapterGetLimits(
     WGPUAdapter adapter,
     WGPULimits* limits
@@ -1773,6 +1844,21 @@ GPU(wgpuAdapterRelease) void wgpuAdapterRelease(
 );
 
 // WGPUDevice
+GPU(wgpuDeviceGetFeatures) void wgpuDeviceGetFeatures(
+    WGPUDevice device,
+    WGPUSupportedFeatures* features
+);
+
+GPU(wgpuDeviceHasFeature) WGPUBool wgpuDeviceHasFeature(
+    WGPUDevice device,
+    WGPUFeatureName feature
+);
+
+GPU(wgpuDeviceGetAdapterInfo) WGPUStatus wgpuDeviceGetAdapterInfo(
+    WGPUDevice device,
+    WGPUAdapterInfo* adapterInfo
+);
+
 GPU(wgpuDeviceGetQueue) WGPUQueue wgpuDeviceGetQueue(
     WGPUDevice device
 );

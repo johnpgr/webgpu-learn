@@ -33,6 +33,9 @@ const REQUEST_DEVICE_STATUS_SUCCESS = 1;
 const REQUEST_DEVICE_STATUS_ERROR = 3;
 const FEATURE_LEVEL_COMPATIBILITY = 1;
 const FEATURE_LEVEL_CORE = 2;
+const BACKEND_TYPE_WEBGPU = 2;
+const ADAPTER_TYPE_CPU = 3;
+const ADAPTER_TYPE_UNKNOWN = 4;
 const INSTANCE_FEATURE_TIMED_WAIT_ANY = 1;
 const MAX_TIMED_WAIT_ANY_COUNT = 64;
 const ERROR_TYPE_VALIDATION = 2;
@@ -425,6 +428,10 @@ const FEATURE_NAMES = [
     "texture-compression-unaligned",
     "atomic-vec2u-min-max",
 ];
+
+const FEATURE_NAME_TO_ENUM = new Map(
+    FEATURE_NAMES.map((name, index) => [name, index]),
+);
 
 // WGPULimits fields in declaration order; offsets follow wasm32 C layout (u64 is
 // 8-byte aligned), starting after nextInChain. Checked against webgpu.h by
@@ -859,6 +866,84 @@ export function createWebGPUBindings({ getExports }) {
         return STATUS_SUCCESS;
     }
 
+    // ---- Features and adapter info ----------------------------------------------
+    // Immutable data is allocated once per object and owned by the host.
+    const featureArrays = new WeakMap();
+    const adapterInfoStrings = new WeakMap();
+    const deviceAdapters = new WeakMap();
+
+    function getFeatureArray(gpuObject) {
+        const cached = featureArrays.get(gpuObject);
+        if (cached !== undefined) return cached;
+        const features = [];
+        for (const name of gpuObject.features) {
+            const value = FEATURE_NAME_TO_ENUM.get(name);
+            if (value !== undefined) features.push(value);
+        }
+        let ptr = 0;
+        if (features.length > 0) {
+            ptr = getExports().wgpu_host_alloc(features.length * 4) >>> 0;
+            if (ptr === 0) throw new RangeError("wgpu_host_alloc failed");
+            const dv = view();
+            features.forEach((value, i) => dv.setUint32(ptr + i * 4, value, true));
+        }
+        const array = { ptr, count: features.length };
+        featureArrays.set(gpuObject, array);
+        return array;
+    }
+
+    function writeSupportedFeatures(gpuObject, ptr) {
+        const array = getFeatureArray(gpuObject);
+        const dv = view();
+        const p = ptr >>> 0;
+        dv.setUint32(p, array.count, true);
+        dv.setUint32(p + 4, array.ptr, true);
+    }
+
+    function hasFeature(gpuObject, value) {
+        const name = FEATURE_NAMES[value >>> 0];
+        return name !== undefined && gpuObject.features.has(name) ? 1 : 0;
+    }
+
+    function getAdapterInfoStrings(info) {
+        const cached = adapterInfoStrings.get(info);
+        if (cached !== undefined) return cached;
+        const strings = [info.vendor, info.architecture, info.device, info.description]
+            .map((text) => encoder.encode(text));
+        const size = strings.reduce((total, bytes) => total + bytes.length, 0);
+        let ptr = 0;
+        if (size > 0) {
+            ptr = getExports().wgpu_host_alloc(size) >>> 0;
+            if (ptr === 0) throw new RangeError("wgpu_host_alloc failed");
+        }
+        const memory = new Uint8Array(buffer());
+        const views = strings.map((bytes) => {
+            memory.set(bytes, ptr);
+            const string = { ptr: bytes.length > 0 ? ptr : 0, len: bytes.length };
+            ptr += bytes.length;
+            return string;
+        });
+        adapterInfoStrings.set(info, views);
+        return views;
+    }
+
+    function writeAdapterInfo(info, ptr) {
+        const strings = getAdapterInfoStrings(info);
+        const dv = view();
+        const p = ptr >>> 0;
+        strings.forEach((string, i) => {
+            dv.setUint32(p + 4 + i * 8, string.ptr, true);
+            dv.setUint32(p + 8 + i * 8, string.len, true);
+        });
+        dv.setUint32(p + 36, BACKEND_TYPE_WEBGPU, true); // the browser hides the native backend
+        dv.setUint32(p + 40, info.isFallbackAdapter ? ADAPTER_TYPE_CPU : ADAPTER_TYPE_UNKNOWN, true);
+        dv.setUint32(p + 44, 0, true); // vendorID is not exposed by browsers
+        dv.setUint32(p + 48, 0, true); // deviceID is not exposed by browsers
+        dv.setUint32(p + 52, info.subgroupMinSize ?? 0, true);
+        dv.setUint32(p + 56, info.subgroupMaxSize ?? 0, true);
+        return STATUS_SUCCESS;
+    }
+
     // ---- Surface capabilities ---------------------------------------------------
     // Arrays live in wasm memory owned by the host, allocated once and shared by
     // every WGPUSurfaceCapabilities (FreeMembers is a no-op).
@@ -1143,6 +1228,29 @@ export function createWebGPUBindings({ getExports }) {
         wgpuInstanceAddRef: addRef,
 
         // WGPUAdapter
+        wgpuAdapterGetFeatures(adapterH, featuresPtr) {
+            const adapter = handles.get(adapterH, "WGPUAdapter");
+            writeSupportedFeatures(adapter, featuresPtr);
+        },
+
+        wgpuAdapterHasFeature(adapterH, feature) {
+            const adapter = handles.get(adapterH, "WGPUAdapter");
+            return hasFeature(adapter, feature);
+        },
+
+        wgpuAdapterGetInfo(adapterH, infoPtr) {
+            const adapter = handles.get(adapterH, "WGPUAdapter");
+            return writeAdapterInfo(adapter.info, infoPtr);
+        },
+
+        wgpuSupportedFeaturesFreeMembers() {
+            // The arrays are cached and owned by the host.
+        },
+
+        wgpuAdapterInfoFreeMembers() {
+            // The strings are cached and owned by the host.
+        },
+
         wgpuAdapterGetLimits(adapterH, limitsPtr) {
             return writeLimits(handles.get(adapterH, "WGPUAdapter").limits, limitsPtr);
         },
@@ -1181,6 +1289,7 @@ export function createWebGPUBindings({ getExports }) {
             const promise = adapter.requestDevice(desc).then(
                 (device) => () => {
                     const deviceH = handles.store(device);
+                    deviceAdapters.set(device, adapter);
                     setUpDevice(deviceH, device, lostInfo, errorInfo);
                     callRequestCallback(info, REQUEST_DEVICE_STATUS_SUCCESS, deviceH, "");
                 },
@@ -1277,6 +1386,21 @@ export function createWebGPUBindings({ getExports }) {
         wgpuAdapterAddRef: addRef,
 
         // WGPUDevice
+        wgpuDeviceGetFeatures(deviceH, featuresPtr) {
+            const device = handles.get(deviceH, "WGPUDevice");
+            writeSupportedFeatures(device, featuresPtr);
+        },
+
+        wgpuDeviceHasFeature(deviceH, feature) {
+            const device = handles.get(deviceH, "WGPUDevice");
+            return hasFeature(device, feature);
+        },
+
+        wgpuDeviceGetAdapterInfo(deviceH, infoPtr) {
+            const device = handles.get(deviceH, "WGPUDevice");
+            return writeAdapterInfo(device.adapterInfo ?? deviceAdapters.get(device).info, infoPtr);
+        },
+
         wgpuDeviceGetQueue(deviceH) {
             const dev = handles.get(deviceH, "WGPUDevice");
             return handles.store(dev.queue);
