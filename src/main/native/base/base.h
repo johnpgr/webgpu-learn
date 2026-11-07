@@ -1,6 +1,6 @@
 #pragma once
 
-typedef signed char ichar;
+typedef unsigned char uchar;
 typedef unsigned short ushort;
 typedef unsigned int uint;
 typedef unsigned long long ulong;
@@ -14,7 +14,7 @@ typedef __int128 int128;
 typedef unsigned __int128 uint128;
 #endif
 
-static_assert(sizeof(char) == 1 && char(-1) > 0);
+static_assert(sizeof(char) == 1 && char(-1) < 0, "char must be signed; use uchar for unsigned bytes");
 static_assert(sizeof(short) == 2);
 static_assert(sizeof(int) == 4);
 static_assert(sizeof(long long) == 8);

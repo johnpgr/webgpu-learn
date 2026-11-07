@@ -11,7 +11,7 @@
 -DDEBUG
 -fno-exceptions
 -fno-rtti
--funsigned-char
+-fsigned-char
 -mbulk-memory
 -Wl,--no-entry
 -Wl,--export-table
