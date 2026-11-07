@@ -10,7 +10,7 @@ EXPORT(init) void init() {
     storage = arena_alloc(MB(64));
 
     WGPUInstanceDescriptor desc = {};
-     desc.nextInChain = nullptr;
+    desc.nextInChain = nullptr;
     instance = wgpuCreateInstance(&desc);
 
     printf("Hello, World! WebGPU instance=%u", instance.id);
